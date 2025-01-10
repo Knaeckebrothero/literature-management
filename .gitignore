@@ -1,14 +1,20 @@
-# Projecspecific contents go here
-
+# Project specific
+search_results/
+papers/
 
 # Local environment
 .env
 
-# Yaml
-*.yaml
-
 # SQLite database files
 *.db
+
+# Data files
+*.csv
+*.bib
+*.ris
+*.pdf
+# *.yaml
+# *.yml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
