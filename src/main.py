@@ -24,15 +24,61 @@ def get_connection():
     return sqlite3.connect('literature.db', check_same_thread=False)
 
 
+def get_all_papers_query():
+    """Return the standard query for loading all papers with their assessment status"""
+    return """
+    SELECT 
+        p.*,  -- All columns from papers table
+        a.is_neurosymbolic,
+        a.is_development,
+        a.paper_type,
+        a.summary,
+        a.takeaways,
+        a.assessment_date,
+        CASE
+            WHEN a.paper_id IS NULL THEN 'Unassessed'
+            WHEN a.is_neurosymbolic = 1 THEN 'Neurosymbolic'
+            ELSE 'Other'
+        END as assessment_status
+    FROM papers p
+    LEFT JOIN paper_assessments a ON p.id = a.paper_id
+    """
+
+
 def load_data(query):
+    """Load data from the database, ensuring we get ALL papers including unassessed ones."""
     conn = get_connection()
-    df = pd.read_sql_query(query, conn)
+
+    # Modified query to get all papers, regardless of assessment status
+    base_query = """
+    SELECT 
+        p.*,  -- All columns from papers table
+        a.is_neurosymbolic,
+        a.is_development,
+        a.paper_type,
+        a.summary,
+        a.takeaways,
+        a.assessment_date,
+        CASE
+            WHEN a.paper_id IS NULL THEN 'Unassessed'
+            WHEN a.is_neurosymbolic = 1 THEN 'Neurosymbolic'
+            ELSE 'Other'
+        END as assessment_status
+    FROM papers p
+    LEFT JOIN paper_assessments a ON p.id = a.paper_id
+    """
+
+    # If a custom query is provided, use it instead
+    query_to_use = query if query else base_query
+
+    df = pd.read_sql_query(query_to_use, conn)
 
     # Convert SQLite integer boolean columns to Python boolean
-    bool_columns = ['is_neurosymbolic', 'key_development']
+    bool_columns = ['is_neurosymbolic', 'is_development']
     for col in bool_columns:
         if col in df.columns:
-            df[col] = df[col].astype(bool)
+            df[col] = df[col].astype('Int64')  # Use nullable integer type
+            df[col] = df[col] == 1  # Convert to boolean while preserving NULL
 
     return df
 
@@ -144,6 +190,10 @@ def display_papers_tab(papers_df):
     """Display the papers tab with basic statistics and visualizations."""
     st.title("Papers")
 
+    if papers_df.empty:
+        st.warning("No papers match the current filter criteria")
+        return
+
     # Basic statistics
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -151,35 +201,69 @@ def display_papers_tab(papers_df):
     with col2:
         st.metric("Unique Venues", papers_df['venue'].nunique())
     with col3:
-        st.metric("Year Range", f"{papers_df['publication_year'].min()}-{papers_df['publication_year'].max()}")
+        year_range = f"{papers_df['publication_year'].min()}-{papers_df['publication_year'].max()}"
+        st.metric("Year Range", year_range)
 
     # Publications per year
     st.subheader("Publications per Year")
     year_counts = papers_df['publication_year'].value_counts().sort_index()
-    fig = px.bar(x=year_counts.index, y=year_counts.values)
-    fig.update_layout(xaxis_title="Year", yaxis_title="Number of Publications")
-    st.plotly_chart(fig, use_container_width=True)
+    df_years = pd.DataFrame({
+        'Year': year_counts.index,
+        'Publications': year_counts.values
+    }).reset_index(drop=True)
+
+    if not df_years.empty:
+        fig = px.bar(df_years, x='Year', y='Publications')
+        fig.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Number of Publications",
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No publication year data available for the current selection")
 
     # Top venues
     st.subheader("Top Publication Venues")
     venue_counts = papers_df['venue'].value_counts().head(10)
-    fig = px.bar(x=venue_counts.values, y=venue_counts.index, orientation='h')
-    fig.update_layout(xaxis_title="Number of Publications", yaxis_title="Venue")
-    st.plotly_chart(fig, use_container_width=True)
+    df_venues = pd.DataFrame({
+        'Venue': venue_counts.index,
+        'Publications': venue_counts.values
+    }).reset_index(drop=True)
+
+    if not df_venues.empty:
+        fig = px.bar(df_venues, x='Publications', y='Venue', orientation='h')
+        fig.update_layout(
+            xaxis_title="Number of Publications",
+            yaxis_title="",
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No venue data available for the current selection")
 
     # Publication sources distribution
     st.subheader("Distribution by Publication Source")
     source_counts = papers_df['publication_source'].value_counts()
-    fig = px.pie(values=source_counts.values, names=source_counts.index)
-    st.plotly_chart(fig, use_container_width=True)
+    df_sources = pd.DataFrame({
+        'Source': source_counts.index,
+        'Count': source_counts.values
+    }).reset_index(drop=True)
+
+    if not df_sources.empty:
+        fig = px.pie(df_sources, values='Count', names='Source')
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No publication source data available for the current selection")
 
     # Interactive table
     st.subheader("Papers Database")
+    display_cols = [
+        'title', 'authors', 'publication_year', 'venue',
+        'publication_type', 'publication_source', 'doi'
+    ]
     st.dataframe(
-        papers_df[[
-            'title', 'authors', 'publication_year', 'venue', 
-            'publication_type', 'publication_source', 'doi'
-        ]],
+        papers_df[display_cols],
         hide_index=True,
         use_container_width=True
     )
@@ -226,13 +310,58 @@ def add_paper():
                 conn.close()
 
 
+def apply_filters(df, filters):
+    """Apply filters to a dataframe"""
+    filtered_df = df.copy()
+
+    # Debug info before filtering
+    print(f"\nInitial dataset size: {len(filtered_df)}")
+    print(f"Assessment status distribution:\n{filtered_df['assessment_status'].value_counts(dropna=False)}")
+
+    # Handle year filter
+    if filters['years']:
+        filtered_df = filtered_df[filtered_df['publication_year'].isin(filters['years'])]
+        print(f"\nAfter year filter: {len(filtered_df)} papers")
+
+    # Handle paper type filter
+    if filters['paper_type'] != "All":
+        filtered_df = filtered_df[
+            (filtered_df['paper_type'] == filters['paper_type']) &
+            (filtered_df['paper_type'].notna())
+            ]
+        print(f"\nAfter paper type filter: {len(filtered_df)} papers")
+
+    # Handle focus filter
+    if filters['focus'] != "All":
+        print(f"\nApplying focus filter: {filters['focus']}")
+        if filters['focus'] == "Neurosymbolic":
+            filtered_df = filtered_df[filtered_df['assessment_status'] == 'Neurosymbolic']
+        else:  # "Unassessed/Other"
+            filtered_df = filtered_df[filtered_df['assessment_status'].isin(['Unassessed', 'Other'])]
+        print(f"After focus filter: {len(filtered_df)} papers")
+        print(f"Assessment status distribution:\n{filtered_df['assessment_status'].value_counts(dropna=False)}")
+
+    # Handle development filter
+    if filters['development'] != "All":
+        if filters['development'] == "Yes":
+            filtered_df = filtered_df[filtered_df['is_development'] == True]
+        else:
+            filtered_df = filtered_df[
+                (filtered_df['is_development'] == False) |
+                (filtered_df['is_development'].isna())
+                ]
+        print(f"\nAfter development filter: {len(filtered_df)} papers")
+
+    return filtered_df
+
+
 def create_filters(papers_df):
     """Create filter widgets that can be used across tabs"""
     filters = {}
-    
+
     with st.sidebar:
         st.header("Filters")
-        
+
         # Year filter
         years = sorted(papers_df['publication_year'].dropna().unique(), reverse=True)
         filters['years'] = st.multiselect(
@@ -240,60 +369,33 @@ def create_filters(papers_df):
             years,
             default=years
         )
-        
-        # Paper type filter - handle NULL values
+
+        # Paper type filter
         paper_types = papers_df['paper_type'].dropna().unique().tolist()
         paper_types = ["All"] + sorted([pt for pt in paper_types if pd.notna(pt) and pt != ''])
         filters['paper_type'] = st.selectbox(
             "Paper Type",
             paper_types
         )
-        
-        # Focus filter
+
+        # Focus filter - updated labels
         filters['focus'] = st.radio(
             "Neurosymbolic Focus",
-            ["All", "Yes", "No"]
+            ["All", "Neurosymbolic", "Unassessed/Other"],
+            help="""
+            - All: Show all papers
+            - Neurosymbolic: Only papers confirmed to be about neurosymbolic AI
+            - Unassessed/Other: Papers that haven't been assessed or were determined not to be neurosymbolic
+            """
         )
-        
+
         # Development filter
         filters['development'] = st.radio(
             "Key Development",
             ["All", "Yes", "No"]
         )
-    
+
     return filters
-
-
-def apply_filters(df, filters):
-    """Apply filters to a dataframe"""
-    filtered_df = df.copy()
-    
-    # Handle year filter
-    if filters['years']:
-        filtered_df = filtered_df[filtered_df['publication_year'].isin(filters['years'])]
-    
-    # Handle paper type filter - consider NULL values
-    if filters['paper_type'] != "All":
-        filtered_df = filtered_df[
-            (filtered_df['paper_type'] == filters['paper_type']) & 
-            (filtered_df['paper_type'].notna())
-        ]
-    
-    # Handle focus filter
-    if filters['focus'] != "All":
-        is_yes = filters['focus'] == "Yes"
-        filtered_df = filtered_df[
-            filtered_df['is_neurosymbolic'].fillna(False) == is_yes
-        ]
-    
-    # Handle development filter
-    if filters['development'] != "All":
-        is_yes = filters['development'] == "Yes"
-        filtered_df = filtered_df[
-            filtered_df['is_development'].fillna(False) == is_yes
-        ]
-    
-    return filtered_df
 
 
 def display_assessments_tab(papers_df, filters):
@@ -636,14 +738,18 @@ def main():
                 process_papers()
 
     try:
-        papers_df = load_data("""
-            SELECT p.*, a.*
-            FROM papers p
-            LEFT JOIN paper_assessments a ON p.id = a.paper_id
-        """)
+        # Use the new standard query
+        papers_df = load_data(get_all_papers_query())
     except sqlite3.OperationalError:
         st.error("Please import citations and process papers first!")
         st.stop()
+
+    # Print debug info about initial data
+    print("\nInitial data load:")
+    print(f"Total papers: {len(papers_df)}")
+    print("\nColumns present:", papers_df.columns.tolist())
+    print("\nAssessment status distribution:")
+    print(papers_df['assessment_status'].value_counts(dropna=False))
 
     # Create filters that will be used across tabs
     filters = create_filters(papers_df)
@@ -660,14 +766,14 @@ def main():
     with assessments_tab:
         display_assessments_tab(papers_df, filters)
 
+    with keywords_tab:
+        display_keywords_tab(papers_df, filters)
+
     with papers_view_tab:
         papers_view(filters)
 
     with add_paper_tab:
         add_paper()
-
-    with keywords_tab:
-        display_keywords_tab(papers_df, filters)
 
 
 if __name__ == "__main__":
