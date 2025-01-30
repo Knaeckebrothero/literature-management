@@ -1,10 +1,12 @@
 {
-    "name": "Python Dev Container",
-    "image": "mcr.microsoft.com/devcontainers/python:3.13",
+    "name": "Python Tesseract Dev Container",
+    "image": "mcr.microsoft.com/devcontainers/python:3.12",
     "features": {
         "ghcr.io/devcontainers/features/python:1": {},
         "ghcr.io/devcontainers/features/common-utils:2": {},
-        "ghcr.io/devcontainers-contrib/features/apt-packages:1": {}
+        "ghcr.io/devcontainers-contrib/features/apt-packages:1": {
+            "packages": "tesseract-ocr libtesseract-dev poppler-utils"
+        }
     },
     "customizations": {
         "vscode": {
