@@ -5,6 +5,9 @@ papers/
 # Local environment
 .env
 
+# Python virtual environment
+.venv/
+
 # SQLite database files
 *.db
 chroma_store/*
