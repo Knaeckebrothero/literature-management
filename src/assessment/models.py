@@ -64,6 +64,8 @@ class Phase2Core(BaseModel):
     ]] = Field(
         description="""Identify the current deployment status of the virtual tutor system.
 
+    **IMPORTANT**: Set to null/None if the paper is not about an actual implementation (e.g., theoretical papers, surveys, or position papers).
+
     RESEARCH PROTOTYPE:
     - Proof-of-concept or experimental system
     - Used only by researchers or in controlled lab settings
@@ -88,8 +90,10 @@ class Phase2Core(BaseModel):
     - Explicitly stated as discontinued or deprecated
 
     NOT SPECIFIED:
-    - Paper does not clearly indicate deployment status
-    - Ambiguous or missing information about current use""",
+    - Paper describes an implementation but deployment status is unclear
+    - Ambiguous or missing information about current use
+    
+    Note: Only select from the above options if the paper describes an actual implementation. Otherwise, return null.""",
         default=None
     )
 
@@ -430,9 +434,10 @@ class Phase4Technical(BaseModel):
 
     NOT_SPECIFIED:
         - Architecture details not provided
-        - Only include if no other components identified
+        - Paper does not describe technical components
+        - Select this when no architectural information is available
 
-    Note: Select ALL that apply. This is a multiple-choice field."""
+    Note: Select ALL that apply. This is a multiple-choice field. If no architectural details are provided in the paper, select only 'not_specified'."""
     )
     interaction_modality: List[Literal[
         "text_only", "voice", "multimodal", "code_execution",
@@ -474,9 +479,10 @@ class Phase4Technical(BaseModel):
 
     NOT_SPECIFIED:
         - Interaction methods unclear
-        - Only include if no other modalities identified
+        - Paper does not describe how students interact with the system
+        - Select this when no interaction details are provided
 
-    Note: Select ALL that apply. Most systems support multiple modalities."""
+    Note: Select ALL that apply. Most systems support multiple modalities. If the paper provides no information about interaction methods, select only 'not_specified'."""
     )
     analytics_features: List[Literal[
         "progress_tracking", "pattern_analysis", "performance_prediction",
@@ -522,9 +528,10 @@ class Phase4Technical(BaseModel):
     NONE_MENTIONED:
         - No analytics features described
         - System lacks analytics capabilities
-        - Only select if no other features apply
+        - Paper does not discuss any analytics functionality
+        - Select this when the paper provides no information about analytics
 
-    Note: Select ALL that apply. Modern systems often include multiple analytics features."""
+    Note: Select ALL that apply. Modern systems often include multiple analytics features. If the paper mentions no analytics capabilities at all, select only 'none_mentioned'."""
     )
 
 
@@ -657,9 +664,9 @@ class Phase5Pedagogical(BaseModel):
     )
     collaboration_types: Optional[List[Literal[
         "group_discussions", "peer_review", "shared_workspaces",
-        "team_projects", "social_learning", "not_applicable"
+        "team_projects", "social_learning"
     ]]] = Field(
-        description="""If collaboration is supported (Q19=Yes), identify ALL types of collaborative learning features.
+        description="""Identify ALL types of collaborative learning features if the virtual tutor supports collaboration.
 
     GROUP_DISCUSSIONS:
         - Moderated discussion forums
@@ -696,11 +703,7 @@ class Phase5Pedagogical(BaseModel):
         - Peer comparison features
         - Gamification with social elements
 
-    NOT_APPLICABLE:
-        - Only select if Q19 was answered as 'No' or 'Not specified'
-        - No collaboration features to categorize
-
-    Note: Only answer if Q19=Yes. Select ALL that apply."""
+    Note: Set to null/None if the system does not support collaboration or if collaboration support is not specified. Select ALL collaboration types that apply when collaboration features are present."""
     )
 
 
@@ -754,7 +757,7 @@ class Phase6Evaluation(BaseModel):
         "knowledge_retention", "self_regulated_learning", "multiple_outcomes",
         "none_measured", "not_applicable"
     ]]] = Field(
-        description="""Identify ALL aspects measured in the empirical evaluation (only if Q10 indicates evaluation was done).
+        description="""Identify ALL aspects measured in the empirical evaluation.
 
     ACADEMIC PERFORMANCE:
         - Test scores, grades, or GPAs
@@ -804,9 +807,10 @@ class Phase6Evaluation(BaseModel):
         - No specific outcomes reported
 
     NOT_APPLICABLE:
-        - Only select if Q10 = no_evaluation or not_specified
+        - Only include in the list if the paper explicitly states no evaluation was done
+        - For papers without evaluation, return null/None instead of including this option
 
-    Note: Select ALL that apply. Most evaluations measure multiple aspects."""
+    Note: Select ALL that apply. Most evaluations measure multiple aspects. If no evaluation was conducted or the evaluation type is unclear, return null/None for this field rather than selecting any options."""
     )
     sample_size: Optional[Literal[
         "less_than_50", "50_to_200", "201_to_500", "more_than_500",
@@ -844,9 +848,10 @@ class Phase6Evaluation(BaseModel):
         - Missing information
 
     NO_EVALUATION:
-        - Only select if Q10 = no_evaluation
+        - Paper explicitly states no evaluation was conducted
+        - Only theoretical or technical description
 
-    Note: Count ALL participants across all conditions/groups. If multiple studies reported, use the largest."""
+    Note: Count ALL participants across all conditions/groups. If multiple studies reported, use the largest. If no evaluation was conducted or it's unclear whether evaluation occurred, return null/None for this field."""
     )
     evaluation_duration: Optional[Literal[
         "single_session", "less_than_month", "one_semester",
@@ -892,7 +897,7 @@ class Phase6Evaluation(BaseModel):
         - Timeframe ambiguous
         - Evaluation done but length unclear
 
-    Note: Use the active intervention period, not follow-up measurements."""
+    Note: Use the active intervention period, not follow-up measurements. If no evaluation was conducted or it's unclear whether evaluation occurred, return null/None for this field."""
     )
 
 

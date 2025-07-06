@@ -11,7 +11,7 @@ from assessment.phases.phase4_technical import Phase4Processor
 from assessment.phases.phase5_pedagogical import Phase5Processor
 from assessment.phases.phase6_evaluation import Phase6Processor
 from assessment.phases.phase7_context import Phase7Processor
-from assessment.phase8_additional import Phase8Processor
+from assessment.phases.phase8_additional import Phase8Processor
 
 logger = logging.getLogger(__name__)
 
