@@ -21,6 +21,76 @@ def get_connection():
     return sqlite3.connect('literature.db', check_same_thread=False)
 
 
+@st.cache_resource
+def load_data_with_lists(base_query=None):
+    """Load data including normalized list fields"""
+    conn = get_connection()
+
+    # Use the provided query or default
+    query = base_query if base_query else get_all_papers_query()
+    papers_df = pd.read_sql_query(query, conn)
+
+    if papers_df.empty:
+        return papers_df
+
+    # Add list fields using GROUP_CONCAT
+    list_queries = {
+        'architecture_components': """
+                                   SELECT paper_id, GROUP_CONCAT(component, ',') as architecture_components
+                                   FROM assessment_architecture_components
+                                   GROUP BY paper_id
+                                   """,
+        'interaction_modality': """
+                                SELECT paper_id, GROUP_CONCAT(modality, ',') as interaction_modality
+                                FROM assessment_interaction_modalities
+                                GROUP BY paper_id
+                                """,
+        'analytics_features': """
+                              SELECT paper_id, GROUP_CONCAT(feature, ',') as analytics_features
+                              FROM assessment_analytics_features
+                              GROUP BY paper_id
+                              """,
+        'pedagogical_features': """
+                                SELECT paper_id, GROUP_CONCAT(feature, ',') as pedagogical_features
+                                FROM assessment_pedagogical_features
+                                GROUP BY paper_id
+                                """,
+        'collaboration_types': """
+                               SELECT paper_id, GROUP_CONCAT(collaboration_type, ',') as collaboration_types
+                               FROM assessment_collaboration_types
+                               GROUP BY paper_id
+                               """,
+        'aspects_evaluated': """
+                             SELECT paper_id, GROUP_CONCAT(aspect, ',') as aspects_evaluated
+                             FROM assessment_aspects_evaluated
+                             GROUP BY paper_id
+                             """
+    }
+
+    # Join each list field
+    for field, query in list_queries.items():
+        list_df = pd.read_sql_query(query, conn)
+        if not list_df.empty:
+            papers_df = papers_df.merge(
+                list_df,
+                left_on='id',
+                right_on='paper_id',
+                how='left'
+            )
+            # Drop the duplicate paper_id column
+            if 'paper_id' in papers_df.columns and 'id' in papers_df.columns:
+                papers_df = papers_df.drop('paper_id', axis=1)
+
+    # Convert SQLite integer boolean columns to Python boolean
+    bool_columns = ['is_virtual_tutor', 'is_implementation']
+    for col in bool_columns:
+        if col in papers_df.columns:
+            papers_df[col] = papers_df[col].astype('Int64')
+            papers_df[col] = papers_df[col] == 1
+
+    return papers_df
+
+
 def get_all_papers_query():
     """Return the standard query for loading all papers with their assessment status"""
     return """
@@ -38,7 +108,7 @@ def get_all_papers_query():
                    ELSE 'Not Virtual Tutor'
                    END as assessment_status
            FROM papers p
-                    LEFT JOIN virtual_tutor_assessments a ON p.id = a.paper_id \
+                    LEFT JOIN virtual_tutor_assessments a ON p.id = a.paper_id
            """
 
 
@@ -62,92 +132,70 @@ def load_data(query):
 
 def setup_database(db_path: str = 'literature.db'):
     """
-    Function to create the SQLite database, set up the connection
-    and create citation and assessment tables if needed.
+    Function to create the SQLite database with normalized schema
     """
     connector = sqlite3.connect(db_path)
     cursor = connector.cursor()
 
-    # Main table for papers
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS papers (
-                                                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                         doi TEXT UNIQUE NOT NULL,
-                                                         title TEXT,
-                                                         publication_year INTEGER,
-                                                         authors TEXT,
-                                                         venue TEXT,
-                                                         volume TEXT,
-                                                         publication_type TEXT,
-                                                         publication_source TEXT,
-                                                         processed BOOLEAN DEFAULT 0,
-                                                         file_path TEXT DEFAULT NULL
-                   )
-                   """)
+    # Enable foreign key constraints
+    cursor.execute("PRAGMA foreign_keys = ON")
 
-    # Table for virtual tutor assessments
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS virtual_tutor_assessments (
-                                                                            paper_id INTEGER PRIMARY KEY,
-                       -- Phase 1
-                                                                            is_virtual_tutor BOOLEAN,
-                                                                            is_implementation BOOLEAN,
-                       -- Phase 2
-                                                                            deployment_status TEXT,
-                                                                            llm_model TEXT,
-                                                                            uses_rag TEXT,
-                                                                            primary_function TEXT,
-                                                                            subject_domain TEXT,
-                                                                            generates_assessments TEXT,
-                       -- Phase 3
-                                                                            publication_type TEXT,
-                                                                            availability TEXT,
-                       -- Phase 4
-                                                                            lms_integration TEXT,
-                                                                            architecture_components TEXT,
-                                                                            interaction_modality TEXT,
-                                                                            analytics_features TEXT,
-                       -- Phase 5
-                                                                            pedagogical_features TEXT,
-                                                                            personalization TEXT,
-                                                                            supports_collaboration TEXT,
-                                                                            collaboration_types TEXT,
-                       -- Phase 6
-                                                                            empirical_evaluation TEXT,
-                                                                            aspects_evaluated TEXT,
-                                                                            sample_size TEXT,
-                                                                            evaluation_duration TEXT,
-                       -- Phase 7
-                                                                            institution_type TEXT,
-                                                                            development_approach TEXT,
-                                                                            language_support TEXT,
-                       -- Phase 8
-                                                                            privacy_protection TEXT,
-                                                                            cost_requirements TEXT,
-                                                                            reference_architecture TEXT,
-                       -- Metadata
-                                                                            assessment_date TIMESTAMP,
-                                                                            FOREIGN KEY (paper_id) REFERENCES papers (id)
-                       )
-                   """)
+    # [... existing table creation code ...]
 
-    # Table for keywords
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS keywords (
-                                                           id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                           keyword TEXT UNIQUE
-                   )
-                   """)
-
-    # Relationship table for keywords and papers
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS rel_keywords_papers (
+    # Add normalized tables for list fields
+    list_tables = [
+        """
+        CREATE TABLE IF NOT EXISTS assessment_architecture_components (
+                                                                          paper_id INTEGER,
+                                                                          component TEXT,
+                                                                          PRIMARY KEY (paper_id, component),
+            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+            )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS assessment_interaction_modalities (
+                                                                         paper_id INTEGER,
+                                                                         modality TEXT,
+                                                                         PRIMARY KEY (paper_id, modality),
+            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+            )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS assessment_analytics_features (
+                                                                     paper_id INTEGER,
+                                                                     feature TEXT,
+                                                                     PRIMARY KEY (paper_id, feature),
+            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+            )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS assessment_pedagogical_features (
+                                                                       paper_id INTEGER,
+                                                                       feature TEXT,
+                                                                       PRIMARY KEY (paper_id, feature),
+            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+            )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS assessment_collaboration_types (
                                                                       paper_id INTEGER,
-                                                                      keyword_id INTEGER,
-                                                                      FOREIGN KEY (paper_id) REFERENCES papers (id),
-                       FOREIGN KEY (keyword_id) REFERENCES keywords (id)
-                       )
-                   """)
+                                                                      collaboration_type TEXT,
+                                                                      PRIMARY KEY (paper_id, collaboration_type),
+            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+            )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS assessment_aspects_evaluated (
+                                                                    paper_id INTEGER,
+                                                                    aspect TEXT,
+                                                                    PRIMARY KEY (paper_id, aspect),
+            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+            )
+        """
+    ]
+
+    for table_sql in list_tables:
+        cursor.execute(table_sql)
 
     connector.commit()
 
@@ -748,8 +796,7 @@ def main():
                 process_papers()
 
     try:
-        # Use the new standard query
-        papers_df = load_data(get_all_papers_query())
+        papers_df = load_data_with_lists()
     except sqlite3.OperationalError:
         st.error("Please import citations and process papers first!")
         st.stop()

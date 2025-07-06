@@ -14,8 +14,10 @@ def get_connection():
 
 
 def load_paper_details():
-    """Load all paper details with their assessments."""
+    """Load all paper details with their assessments including normalized list fields."""
     conn = get_connection()
+
+    # Base query without list fields
     query = """
             SELECT
                 p.id,
@@ -42,19 +44,13 @@ def load_paper_details():
                 -- Phase 3
                 a.publication_type as assessment_publication_type,
                 a.availability,
-                -- Phase 4
+                -- Phase 4 (removing list fields)
                 a.lms_integration,
-                a.architecture_components,
-                a.interaction_modality,
-                a.analytics_features,
-                -- Phase 5
-                a.pedagogical_features,
+                -- Phase 5 (removing list fields)
                 a.personalization,
                 a.supports_collaboration,
-                a.collaboration_types,
-                -- Phase 6
+                -- Phase 6 (removing list fields)
                 a.empirical_evaluation,
-                a.aspects_evaluated,
                 a.sample_size,
                 a.evaluation_duration,
                 -- Phase 7
@@ -74,9 +70,62 @@ def load_paper_details():
                     END as assessment_status
             FROM papers p
                      LEFT JOIN virtual_tutor_assessments a ON p.id = a.paper_id
-            ORDER BY a.assessment_date DESC, p.publication_year DESC \
+            ORDER BY a.assessment_date DESC, p.publication_year DESC
             """
-    return pd.read_sql_query(query, conn)
+
+    papers_df = pd.read_sql_query(query, conn)
+
+    if papers_df.empty:
+        return papers_df
+
+    # Add list fields
+    list_queries = {
+        'architecture_components': """
+                                   SELECT paper_id, GROUP_CONCAT(component, ',') as architecture_components
+                                   FROM assessment_architecture_components
+                                   GROUP BY paper_id
+                                   """,
+        'interaction_modality': """
+                                SELECT paper_id, GROUP_CONCAT(modality, ',') as interaction_modality
+                                FROM assessment_interaction_modalities
+                                GROUP BY paper_id
+                                """,
+        'analytics_features': """
+                              SELECT paper_id, GROUP_CONCAT(feature, ',') as analytics_features
+                              FROM assessment_analytics_features
+                              GROUP BY paper_id
+                              """,
+        'pedagogical_features': """
+                                SELECT paper_id, GROUP_CONCAT(feature, ',') as pedagogical_features
+                                FROM assessment_pedagogical_features
+                                GROUP BY paper_id
+                                """,
+        'collaboration_types': """
+                               SELECT paper_id, GROUP_CONCAT(collaboration_type, ',') as collaboration_types
+                               FROM assessment_collaboration_types
+                               GROUP BY paper_id
+                               """,
+        'aspects_evaluated': """
+                             SELECT paper_id, GROUP_CONCAT(aspect, ',') as aspects_evaluated
+                             FROM assessment_aspects_evaluated
+                             GROUP BY paper_id
+                             """
+    }
+
+    # Join each list field
+    for field, query in list_queries.items():
+        list_df = pd.read_sql_query(query, conn)
+        if not list_df.empty:
+            papers_df = papers_df.merge(
+                list_df,
+                left_on='id',
+                right_on='paper_id',
+                how='left'
+            )
+            if 'paper_id' in papers_df.columns and 'id' in papers_df.columns:
+                papers_df = papers_df.drop('paper_id', axis=1)
+
+    return papers_df
 
 
 def apply_filters(df, filters):

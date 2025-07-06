@@ -45,7 +45,7 @@ def standardize_doi(doi: str) -> Optional[str]:
     if not doi:
         return None
 
-    print(f"Original DOI string: {doi}")
+    # print(f"Original DOI string: {doi}")
 
     # Remove common prefixes and whitespace
     doi = doi.lower().strip()
@@ -63,7 +63,7 @@ def standardize_doi(doi: str) -> Optional[str]:
         if doi.startswith(prefix):
             doi = doi[len(prefix):]
 
-    print(f"After prefix removal: {doi}")
+    # print(f"After prefix removal: {doi}")
 
     # Define patterns for different DOI formats
     patterns = [
@@ -396,16 +396,50 @@ class PdfProcessor:
             return None
 
     def save_assessment(self, paper_id: int, assessment: Dict[str, Any]):
-        """Save paper assessment to database"""
+        """Save paper assessment to database with normalized list handling"""
         cursor = self.conn.cursor()
 
-        try:
-            # Build the SQL dynamically based on available fields
-            fields = list(assessment.keys()) + ['assessment_date', 'paper_id']
-            values = list(assessment.values()) + [datetime.now().isoformat(), paper_id]
+        # Define which fields are lists and their corresponding tables
+        list_field_mappings = {
+            'architecture_components': 'assessment_architecture_components',
+            'interaction_modality': 'assessment_interaction_modalities',
+            'analytics_features': 'assessment_analytics_features',
+            'pedagogical_features': 'assessment_pedagogical_features',
+            'collaboration_types': 'assessment_collaboration_types',
+            'aspects_evaluated': 'assessment_aspects_evaluated'
+        }
 
-            placeholders = ','.join(['?' for _ in values])
-            field_names = ','.join(fields)
+        try:
+            # Start a transaction
+            cursor.execute("BEGIN TRANSACTION")
+
+            # Separate list fields from scalar fields
+            scalar_fields = {}
+            list_fields = {}
+
+            for field, value in assessment.items():
+                if field in list_field_mappings and value:
+                    # Handle list fields
+                    if isinstance(value, str) and ',' in value:
+                        # Already comma-separated (from _flatten_assessment)
+                        list_fields[field] = [v.strip() for v in value.split(',')]
+                    elif isinstance(value, list):
+                        list_fields[field] = value
+                    else:
+                        # Single value, treat as list
+                        list_fields[field] = [value]
+                else:
+                    # Scalar field
+                    scalar_fields[field] = value
+
+            # Insert scalar fields into main assessment table
+            scalar_fields['assessment_date'] = datetime.now().isoformat()
+            scalar_fields['paper_id'] = paper_id
+
+            # Build SQL for scalar fields only
+            field_names = ','.join(scalar_fields.keys())
+            placeholders = ','.join(['?' for _ in scalar_fields])
+            values = list(scalar_fields.values())
 
             cursor.execute(f'''
                 INSERT OR REPLACE INTO virtual_tutor_assessments
@@ -413,11 +447,45 @@ class PdfProcessor:
                 VALUES ({placeholders})
             ''', values)
 
-            self.conn.commit()
+            # Insert list fields into their respective tables
+            for field, items in list_fields.items():
+                table_name = list_field_mappings[field]
+
+                # First, delete existing entries for this paper
+                cursor.execute(f"DELETE FROM {table_name} WHERE paper_id = ?", (paper_id,))
+
+                # Then insert new entries
+                if items and items != ['']:  # Skip empty lists
+                    # Determine column name based on table
+                    if 'collaboration_type' in table_name:
+                        col_name = 'collaboration_type'
+                    elif 'component' in table_name:
+                        col_name = 'component'
+                    elif 'modality' in table_name:
+                        col_name = 'modality'
+                    elif 'feature' in table_name:
+                        col_name = 'feature'
+                    elif 'aspect' in table_name:
+                        col_name = 'aspect'
+                    else:
+                        col_name = 'value'  # fallback
+
+                    for item in items:
+                        if item and item.strip():  # Skip empty strings
+                            cursor.execute(
+                                f"INSERT INTO {table_name} (paper_id, {col_name}) VALUES (?, ?)",
+                                (paper_id, item.strip())
+                            )
+
+            # Commit the transaction
+            cursor.execute("COMMIT")
             logger.info(f"Assessment saved for paper {paper_id}")
 
         except Exception as e:
+            # Rollback on error
+            cursor.execute("ROLLBACK")
             logger.error(f"Error saving assessment: {e}")
+            raise
 
     def process_directory(self, directory_path: str):
         """Process all PDFs in directory with error handling"""
