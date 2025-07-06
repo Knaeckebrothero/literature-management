@@ -4,13 +4,13 @@ Main Virtual Tutor Assessment class that orchestrates all phases
 import logging
 from typing import Dict, Any, Optional
 from assessment.models import VirtualTutorAssessmentResult
-from assessment.phase1_filtering import Phase1Processor
-from assessment.phase2_core import Phase2Processor
-from assessment.phase3_metadata import Phase3Processor
-from assessment.phase4_technical import Phase4Processor
-from assessment.phase5_pedagogical import Phase5Processor
-from assessment.phase6_evaluation import Phase6Processor
-from assessment.phase7_context import Phase7Processor
+from assessment.phases.phase1_filtering import Phase1Processor
+from assessment.phases.phase2_core import Phase2Processor
+from assessment.phases.phase3_metadata import Phase3Processor
+from assessment.phases.phase4_technical import Phase4Processor
+from assessment.phases.phase5_pedagogical import Phase5Processor
+from assessment.phases.phase6_evaluation import Phase6Processor
+from assessment.phases.phase7_context import Phase7Processor
 from assessment.phase8_additional import Phase8Processor
 
 logger = logging.getLogger(__name__)

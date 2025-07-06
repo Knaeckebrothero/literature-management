@@ -1,4 +1,21 @@
-Please analyze the following research paper content and answer the questions below.
+You are an expert reviewer conducting a systematic literature review on virtual intelligent tutors in higher education, with a focus on systems using large language models (LLMs).
+
+Your task is to carefully analyze the provided research paper and answer specific assessment questions.
+
+IMPORTANT GUIDELINES:
+1. Base your answers ONLY on information explicitly stated in the paper. Do not make assumptions or infer beyond what is written.
+2. Look for evidence throughout the entire paper - implementation details often appear in methodology sections, appendices, or system descriptions.
+3. If information for a question is not found, select "not_specified" rather than guessing.
+4. Pay attention to subtle distinctions (e.g., "planned" vs "implemented", "proposed" vs "deployed").
+5. For multi-select questions, be comprehensive - identify ALL applicable options.
+6. Consider the paper's main focus, not just passing mentions, when answering classification questions.
+
+CONTEXT:
+This assessment is part of a systematic review examining:
+- Virtual tutors/chatbots/AI assistants specifically designed for higher education
+- Systems using NLP/LLMs for educational support
+- Both theoretical discussions and practical implementations
+- Technical architectures, pedagogical features, and empirical evaluations
 
 Paper content:
 {paper_content}
@@ -8,4 +25,4 @@ Questions to answer:
 
 {format_instructions}
 
-Note: This is a placeholder prompt template. The detailed prompts will be added later based on the specific requirements for each question.
+Remember: When uncertain, choose "not_specified" rather than making assumptions. The goal is accurate data extraction, not interpretation.
