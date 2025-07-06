@@ -305,20 +305,21 @@ def import_citations():
     # Configure base path for search results
     search_dir = Path('search_results')
 
-    # Configure files with relative paths
+    # Configure files with relative paths - ONLY include files that exist
     file_config = {
-        'bibtex': [
-            search_dir / 'acm.bib',
-            search_dir / 'ScienceDirect_1.bib',
-            search_dir / 'ScienceDirect_2.bib',
-            search_dir / 'wiley_1.bib',
-            search_dir / 'wiley_2.bib'
-        ],
         'ieee': [search_dir / 'ieee.csv'],
-        'springer': [
-            search_dir / 'SpringerLink_1.csv',
-            search_dir / 'SpringerLink_2.csv'
-        ],
+        # Comment out files that don't exist yet
+        # 'bibtex': [
+        #     search_dir / 'acm.bib',
+        #     search_dir / 'ScienceDirect_1.bib',
+        #     search_dir / 'ScienceDirect_2.bib',
+        #     search_dir / 'wiley_1.bib',
+        #     search_dir / 'wiley_2.bib'
+        # ],
+        # 'springer': [
+        #     search_dir / 'SpringerLink_1.csv',
+        #     search_dir / 'SpringerLink_2.csv'
+        # ],
     }
 
     processor = CitationProcessor()

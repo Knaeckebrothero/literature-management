@@ -236,8 +236,7 @@ class PdfProcessor:
         # Initialize rate limiter (20 requests per minute)
         self.rate_limiter = RateLimiter(requests_per_minute=20)
 
-        # Create assessment table
-        self._create_assessment_table()
+        # Note: We no longer create the assessment table here - it's handled by main.py
 
     def __del__(self):
         if self.conn:
@@ -246,55 +245,6 @@ class PdfProcessor:
     def close(self):
         if self.conn:
             self.conn.close()
-
-    def _create_assessment_table(self):
-        """Create the virtual tutor assessments table"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-                       CREATE TABLE IF NOT EXISTS virtual_tutor_assessments (
-                                                                                paper_id INTEGER PRIMARY KEY,
-                           -- Phase 1
-                                                                                is_virtual_tutor BOOLEAN,
-                                                                                is_implementation BOOLEAN,
-                           -- Phase 2
-                                                                                deployment_status TEXT,
-                                                                                llm_model TEXT,
-                                                                                uses_rag TEXT,
-                                                                                primary_function TEXT,
-                                                                                subject_domain TEXT,
-                                                                                generates_assessments TEXT,
-                           -- Phase 3
-                                                                                publication_type TEXT,
-                                                                                availability TEXT,
-                           -- Phase 4
-                                                                                lms_integration TEXT,
-                                                                                architecture_components TEXT,
-                                                                                interaction_modality TEXT,
-                                                                                analytics_features TEXT,
-                           -- Phase 5
-                                                                                pedagogical_features TEXT,
-                                                                                personalization TEXT,
-                                                                                supports_collaboration TEXT,
-                                                                                collaboration_types TEXT,
-                           -- Phase 6
-                                                                                empirical_evaluation TEXT,
-                                                                                aspects_evaluated TEXT,
-                                                                                sample_size TEXT,
-                                                                                evaluation_duration TEXT,
-                           -- Phase 7
-                                                                                institution_type TEXT,
-                                                                                development_approach TEXT,
-                                                                                language_support TEXT,
-                           -- Phase 8
-                                                                                privacy_protection TEXT,
-                                                                                cost_requirements TEXT,
-                                                                                reference_architecture TEXT,
-                           -- Metadata
-                                                                                assessment_date TIMESTAMP,
-                                                                                FOREIGN KEY (paper_id) REFERENCES papers (id)
-                       )
-                       """)
-        self.conn.commit()
 
     def find_paper_id(self, pdf_path: str) -> Optional[int]:
         """
@@ -418,18 +368,22 @@ class PdfProcessor:
             list_fields = {}
 
             for field, value in assessment.items():
-                if field in list_field_mappings and value:
-                    # Handle list fields
-                    if isinstance(value, str) and ',' in value:
-                        # Already comma-separated (from _flatten_assessment)
-                        list_fields[field] = [v.strip() for v in value.split(',')]
-                    elif isinstance(value, list):
-                        list_fields[field] = value
-                    else:
-                        # Single value, treat as list
-                        list_fields[field] = [value]
+                if field in list_field_mappings:
+                    # This is a list field - handle it separately even if value is None
+                    if value:
+                        # Handle list fields with values
+                        if isinstance(value, str) and ',' in value:
+                            # Already comma-separated (from _flatten_assessment)
+                            list_fields[field] = [v.strip() for v in value.split(',')]
+                        elif isinstance(value, list):
+                            list_fields[field] = value
+                        else:
+                            # Single value, treat as list
+                            list_fields[field] = [value]
+                    # If value is None or empty, we simply don't add it to list_fields
+                    # and don't add it to scalar_fields either
                 else:
-                    # Scalar field
+                    # Only non-list fields go to scalar_fields
                     scalar_fields[field] = value
 
             # Insert scalar fields into main assessment table
@@ -461,7 +415,7 @@ class PdfProcessor:
                         col_name = 'collaboration_type'
                     elif 'component' in table_name:
                         col_name = 'component'
-                    elif 'modality' in table_name:
+                    elif 'modalit' in table_name:  # matches both modality and modalities
                         col_name = 'modality'
                     elif 'feature' in table_name:
                         col_name = 'feature'
