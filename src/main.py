@@ -171,7 +171,6 @@ def setup_database_with_connection(conn):
     conn.commit()
 
 
-@st.cache_resource
 def load_data_with_lists(base_query=None):
     """Load data including normalized list fields"""
     try:
@@ -308,18 +307,17 @@ def import_citations():
     # Configure files with relative paths - ONLY include files that exist
     file_config = {
         'ieee': [search_dir / 'ieee.csv'],
-         'bibtex': [
-             search_dir / 'acm.bib',
-             search_dir / 'ScienceDirect_1.bib',
-             search_dir / 'ScienceDirect_2.bib',
-             search_dir / 'ScienceDirect_3.bib',
-             # search_dir / 'wiley_1.bib',
-             # search_dir / 'wiley_2.bib'
-         ],
-         'springer': [
-             search_dir / 'SpringerLink.csv',
-             #search_dir / 'SpringerLink_2.csv'
-         ],
+        'bibtex': [
+            search_dir / 'acm.bib',
+            search_dir / 'ScienceDirect_1.bib',
+            search_dir / 'ScienceDirect_2.bib',
+            # search_dir / 'wiley_1.bib',
+            # search_dir / 'wiley_2.bib'
+        ],
+        'springer': [
+            search_dir / 'SpringerLink_1.csv',
+            search_dir / 'SpringerLink_2.csv'
+        ],
     }
 
     processor = CitationProcessor()
@@ -330,6 +328,15 @@ def process_papers():
     processor = PdfProcessor()
     try:
         processor.process_directory('papers')
+    finally:
+        processor.close()
+
+
+def import_arxiv_papers(directory_path: str):
+    """Import arXiv papers from a directory"""
+    processor = PdfProcessor()
+    try:
+        processor.process_directory(directory_path, create_missing=True)
     finally:
         processor.close()
 
@@ -889,13 +896,40 @@ def main():
     setup_database()
 
     with st.sidebar:
-        if st.button("Import Citations"):
+        st.header("Data Import Actions")
+
+        if st.button("Import Citations", help="Import citations from configured sources"):
             with st.spinner("Importing citations..."):
                 import_citations()
+                st.success("Citations imported!")
 
-        if st.button("Process Papers"):
+        if st.button("Process Papers", help="Process PDFs in 'papers' directory"):
             with st.spinner("Processing papers..."):
                 process_papers()
+                st.success("Papers processed!")
+
+        st.divider()
+
+        # NEW: Add arXiv import section
+        st.subheader("Import arXiv Papers")
+        arxiv_dir = st.text_input(
+            "arXiv PDF Directory",
+            value="arxiv_papers",
+            help="Directory containing arXiv PDFs to import"
+        )
+
+        if st.button("Import arXiv PDFs",
+                     help="Import PDFs and create database entries automatically"):
+            if arxiv_dir and Path(arxiv_dir).exists():
+                pdf_count = len(list(Path(arxiv_dir).glob('*.pdf')))
+                if pdf_count > 0:
+                    with st.spinner(f"Importing {pdf_count} arXiv papers..."):
+                        import_arxiv_papers(arxiv_dir)
+                        st.success(f"Imported {pdf_count} arXiv papers!")
+                else:
+                    st.warning(f"No PDF files found in '{arxiv_dir}'")
+            else:
+                st.error(f"Directory '{arxiv_dir}' does not exist!")
 
     try:
         papers_df = load_data_with_lists()

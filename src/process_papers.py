@@ -206,6 +206,142 @@ def extract_title_from_pdf(pdf_path: str) -> Optional[str]:
         return None
 
 
+def extract_authors_from_pdf(pdf_path: str) -> Optional[str]:
+    """Extract authors from PDF metadata or content"""
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
+
+            # Try metadata first
+            if pdf.metadata and '/Author' in pdf.metadata:
+                return pdf.metadata['/Author'].strip()
+
+            # Try to extract from first page
+            first_page_text = pdf.pages[0].extract_text()
+            lines = first_page_text.split('\n')
+
+            # Look for author patterns (usually after title)
+            title = extract_title_from_pdf(pdf_path)
+            if title:
+                title_lower = title[:30].lower()
+                for i, line in enumerate(lines):
+                    if title_lower in line.lower() and i + 1 < len(lines):
+                        # Authors often appear right after title
+                        potential_authors = []
+                        for j in range(i + 1, min(i + 5, len(lines))):
+                            next_line = lines[j].strip()
+                            # Stop if we hit abstract or other sections
+                            if any(kw in next_line.lower() for kw in ['abstract', 'introduction', 'keywords', '1.']):
+                                break
+                            if next_line and len(next_line) > 5:
+                                potential_authors.append(next_line)
+
+                        if potential_authors:
+                            return ', '.join(potential_authors[:2])  # Take first 2 lines as authors
+
+            return None
+    except Exception as e:
+        logger.error(f"Error extracting authors from {pdf_path}: {e}")
+        return None
+
+
+def extract_year_from_pdf(pdf_path: str) -> Optional[int]:
+    """Extract publication year from PDF metadata or content"""
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
+
+            # Try metadata first
+            if pdf.metadata and '/CreationDate' in pdf.metadata:
+                date_str = pdf.metadata['/CreationDate']
+                # Parse PDF date format (D:YYYYMMDDHHmmSS)
+                year_match = re.search(r'D:(\d{4})', date_str)
+                if year_match:
+                    return int(year_match.group(1))
+
+            # Search for year patterns in first few pages
+            for i in range(min(3, len(pdf.pages))):
+                text = pdf.pages[i].extract_text()
+
+                # Look for arXiv pattern
+                arxiv_match = re.search(r'arXiv:(\d{2})(\d{2})\.\d{4,5}', text)
+                if arxiv_match:
+                    year = int('20' + arxiv_match.group(1))
+                    return year
+
+                # Look for copyright year
+                copyright_match = re.search(r'©\s*(\d{4})', text)
+                if copyright_match:
+                    return int(copyright_match.group(1))
+
+                # Look for common year patterns
+                year_patterns = [
+                    r'(19|20)\d{2}',  # Basic year
+                    r'published.*?(19|20)\d{2}',
+                    r'accepted.*?(19|20)\d{2}',
+                    r'submitted.*?(19|20)\d{2}'
+                ]
+
+                for pattern in year_patterns:
+                    matches = re.findall(pattern, text, re.IGNORECASE)
+                    if matches:
+                        # Get the most recent year
+                        years = [int(m) if isinstance(m, str) and m.isdigit() else int(m[0] + m[1])
+                                 for m in matches if isinstance(m, (str, tuple))]
+                        valid_years = [y for y in years if 1990 <= y <= datetime.now().year + 1]
+                        if valid_years:
+                            return max(valid_years)
+
+            return None
+    except Exception as e:
+        logger.error(f"Error extracting year from {pdf_path}: {e}")
+        return None
+
+
+def extract_full_metadata_from_pdf(pdf_path: str) -> Dict[str, Any]:
+    """Extract comprehensive metadata from PDF"""
+    metadata = {
+        'doi': extract_doi_from_pdf(pdf_path),
+        'title': extract_title_from_pdf(pdf_path),
+        'authors': extract_authors_from_pdf(pdf_path),
+        'year': extract_year_from_pdf(pdf_path),
+        'venue': 'arXiv',
+        'arxiv_id': None
+    }
+
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
+
+            # Search first pages for arXiv patterns
+            for i in range(min(3, len(pdf.pages))):
+                text = pdf.pages[i].extract_text()
+
+                # Look for arXiv ID (e.g., arXiv:2401.12345)
+                arxiv_match = re.search(r'arXiv:(\d{4}\.\d{4,5})', text)
+                if arxiv_match:
+                    metadata['arxiv_id'] = arxiv_match.group(1)
+                    # Extract year from arXiv ID if not already found
+                    if not metadata['year']:
+                        year = int('20' + arxiv_match.group(1)[:2])
+                        if 2000 <= year <= datetime.now().year + 1:
+                            metadata['year'] = year
+                    break
+
+    except Exception as e:
+        logger.error(f"Error extracting full metadata from {pdf_path}: {e}")
+
+    # Set defaults if not found
+    if not metadata['title']:
+        metadata['title'] = Path(pdf_path).stem  # Use filename as fallback
+    if not metadata['authors']:
+        metadata['authors'] = 'Unknown Authors'
+    if not metadata['year']:
+        metadata['year'] = datetime.now().year
+
+    return metadata
+
+
 class PdfProcessor:
     """
     ETL class for importing and processing research papers.
@@ -245,6 +381,54 @@ class PdfProcessor:
     def close(self):
         if self.conn:
             self.conn.close()
+
+    def create_paper_from_pdf(self, pdf_path: str) -> Optional[int]:
+        """Create a new paper entry from PDF metadata"""
+        logger.info(f"Attempting to create paper entry from PDF: {pdf_path}")
+
+        metadata = extract_full_metadata_from_pdf(pdf_path)
+
+        # Need at least a title to create an entry
+        if not metadata.get('title'):
+            logger.warning(f"Could not extract sufficient metadata from {pdf_path}")
+            return None
+
+        # Check if paper with same title already exists
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT id FROM papers WHERE LOWER(title) = LOWER(?)', (metadata['title'],))
+        existing = cursor.fetchone()
+        if existing:
+            logger.info(f"Paper with title '{metadata['title']}' already exists with ID {existing[0]}")
+            return existing[0]
+
+        # Insert into database
+        try:
+            cursor.execute('''
+                           INSERT INTO papers
+                           (doi, title, publication_year, authors, venue, volume, publication_type,
+                            publication_source, processed, file_path)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ''', (
+                               metadata.get('doi', ''),
+                               metadata['title'],
+                               metadata['year'],
+                               metadata['authors'],
+                               metadata['venue'],
+                               metadata.get('arxiv_id', ''),  # Store arxiv ID in volume field
+                               'preprint',
+                               'arxiv_auto_import',
+                               0,
+                               pdf_path
+                           ))
+
+            self.conn.commit()
+            paper_id = cursor.lastrowid
+            logger.info(f"Created new paper entry with ID {paper_id} for '{metadata['title']}'")
+            return paper_id
+
+        except Exception as e:
+            logger.error(f"Error creating paper entry: {e}")
+            return None
 
     def find_paper_id(self, pdf_path: str) -> Optional[int]:
         """
@@ -441,8 +625,14 @@ class PdfProcessor:
             logger.error(f"Error saving assessment: {e}")
             raise
 
-    def process_directory(self, directory_path: str):
-        """Process all PDFs in directory with error handling"""
+    def process_directory(self, directory_path: str, create_missing: bool = False):
+        """
+        Process all PDFs in directory with error handling.
+
+        Args:
+            directory_path: Path to directory containing PDFs
+            create_missing: If True, create database entries for PDFs not found in database
+        """
         pdf_files = Path(directory_path).glob('*.pdf')
 
         for pdf_path in pdf_files:
@@ -451,11 +641,17 @@ class PdfProcessor:
             try:
                 # Find paper ID
                 paper_id = self.find_paper_id(str(pdf_path))
-                logger.info(f"Paper ID -> {paper_id}")
+
+                if not paper_id and create_missing:
+                    # Try to create entry from PDF metadata
+                    logger.info(f"Paper not found in database, attempting to create entry from PDF metadata...")
+                    paper_id = self.create_paper_from_pdf(str(pdf_path))
 
                 if not paper_id:
                     logger.warning(f"No matching paper found for {pdf_path.name}, skipping...")
                     continue
+
+                logger.info(f"Paper ID -> {paper_id}")
 
                 # Check page count
                 with open(pdf_path, 'rb') as file:
