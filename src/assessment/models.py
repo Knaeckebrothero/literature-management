@@ -258,7 +258,7 @@ class Phase2Core(BaseModel):
 class Phase3Metadata(BaseModel):
     publication_type: Literal[
         "journal_article", "conference_paper", "technical_report",
-        "thesis_dissertation", "preprint", "other"
+        "thesis_dissertation", "preprint", "other", "not_specified"
     ] = Field(
         description="""Identify the type of publication for proper categorization in the systematic review.
 

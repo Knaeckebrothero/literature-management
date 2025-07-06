@@ -94,7 +94,7 @@ This assessment is part of a systematic review examining:
 - Technical architectures, pedagogical features, and empirical evaluations
 
 Paper content:
-{paper_content}
+{content}
 
 Questions to answer:
 {questions}
