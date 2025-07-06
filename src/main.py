@@ -42,7 +42,7 @@ def setup_database_with_connection(conn):
     cursor.execute("""
                    CREATE TABLE IF NOT EXISTS papers (
                                                          id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                         doi TEXT UNIQUE NOT NULL,
+                                                         doi TEXT UNIQUE,
                                                          title TEXT,
                                                          publication_year INTEGER,
                                                          authors TEXT,
@@ -296,6 +296,21 @@ def setup_database(db_path: str = 'literature.db'):
     and create citation and assessment tables if needed.
     """
     conn = sqlite3.connect(db_path)
+
+    # Check if papers table exists with old schema
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers'")
+    if cursor.fetchone():
+        # Table exists, check if DOI has NOT NULL constraint
+        cursor.execute("PRAGMA table_info(papers)")
+        columns = cursor.fetchall()
+
+        for col in columns:
+            if col[1] == 'doi' and col[3] == 1:  # NOT NULL constraint exists
+                st.warning("Database schema needs update to support arXiv papers without DOIs.")
+                st.info("Please run: `python migrate_database.py` to update your database schema.")
+                break
+
     setup_database_with_connection(conn)
     conn.close()
 
@@ -426,10 +441,22 @@ def display_papers_tab(papers_df):
     st.subheader("Papers Database")
     display_cols = [
         'title', 'authors', 'publication_year', 'venue',
-        'publication_type', 'publication_source', 'doi'
+        'publication_type', 'publication_source', 'doi', 'volume'
     ]
+
+    # Create a display dataframe with formatted DOI/arXiv ID
+    display_df = papers_df[display_cols].copy()
+    display_df['ID'] = display_df.apply(
+        lambda row: row['doi'] if pd.notna(row['doi']) else
+        (f"arXiv:{row['volume']}" if pd.notna(row['volume']) and row['publication_source'] == 'arxiv_auto_import' else 'N/A'),
+        axis=1
+    )
+
+    # Reorder columns
+    final_cols = ['title', 'authors', 'publication_year', 'venue', 'publication_type', 'publication_source', 'ID']
+
     st.dataframe(
-        papers_df[display_cols],
+        display_df[final_cols],
         hide_index=True,
         use_container_width=True
     )
@@ -440,19 +467,22 @@ def add_paper():
 
     # Form for paper details
     with st.form("paper_form"):
-        doi = st.text_input("DOI*", help="Digital Object Identifier (required)")
+        doi = st.text_input("DOI", help="Digital Object Identifier (optional for preprints)")
         title = st.text_input("Title*", help="Paper title (required)")
         year = st.number_input("Publication Year*", min_value=1900, max_value=2100, value=2024)
         authors = st.text_input("Authors*", help="Comma-separated list of authors")
         venue = st.text_input("Venue", help="Journal or conference name")
-        volume = st.text_input("Volume")
-        publication_type = st.text_input("Publication Type")
+        volume = st.text_input("Volume/arXiv ID", help="Volume number or arXiv identifier")
+        publication_type = st.selectbox(
+            "Publication Type",
+            ["journal_article", "conference_paper", "preprint", "technical_report", "thesis_dissertation", "other"]
+        )
         publication_source = st.text_input("Publication Source", help="Where this paper was found")
 
         submitted = st.form_submit_button("Add Paper")
 
         if submitted:
-            if not all([doi, title, authors]):
+            if not all([title, authors]):
                 st.error("Please fill in all required fields (marked with *)")
                 return
 
@@ -464,7 +494,16 @@ def add_paper():
                                INSERT INTO papers
                                (doi, title, publication_year, authors, venue, volume, publication_type, publication_source)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                               """, (doi, title, year, authors, venue, volume, publication_type, publication_source))
+                               """, (
+                                   doi or None,  # Use None for NULL instead of empty string
+                                   title,
+                                   year,
+                                   authors,
+                                   venue,
+                                   volume,
+                                   publication_type,
+                                   publication_source
+                               ))
 
                 conn.commit()
                 st.success("Paper added successfully!")
@@ -921,11 +960,30 @@ def main():
         if st.button("Import arXiv PDFs",
                      help="Import PDFs and create database entries automatically"):
             if arxiv_dir and Path(arxiv_dir).exists():
-                pdf_count = len(list(Path(arxiv_dir).glob('*.pdf')))
+                pdf_files = list(Path(arxiv_dir).glob('*.pdf'))
+                pdf_count = len(pdf_files)
                 if pdf_count > 0:
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
                     with st.spinner(f"Importing {pdf_count} arXiv papers..."):
-                        import_arxiv_papers(arxiv_dir)
-                        st.success(f"Imported {pdf_count} arXiv papers!")
+                        try:
+                            import_arxiv_papers(arxiv_dir)
+                            st.success(f"Completed importing arXiv papers!")
+
+                            # Show summary
+                            conn = get_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                           SELECT COUNT(*) FROM papers
+                                           WHERE publication_source = 'arxiv_auto_import'
+                                           """)
+                            imported_count = cursor.fetchone()[0]
+                            st.info(f"Total arXiv papers in database: {imported_count}")
+
+                        except Exception as e:
+                            st.error(f"Error during import: {str(e)}")
+                            st.info("If you see 'NOT NULL constraint failed', please run migrate_database.py first")
                 else:
                     st.warning(f"No PDF files found in '{arxiv_dir}'")
             else:
