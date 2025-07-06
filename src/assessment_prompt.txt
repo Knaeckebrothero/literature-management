@@ -1,0 +1,11 @@
+Please analyze the following research paper content and answer the questions below.
+
+Paper content:
+{paper_content}
+
+Questions to answer:
+{questions}
+
+{format_instructions}
+
+Note: This is a placeholder prompt template. The detailed prompts will be added later based on the specific requirements for each question.

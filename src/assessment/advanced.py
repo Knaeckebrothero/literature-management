@@ -3,38 +3,38 @@ from pydantic import BaseModel, Field
 
 class SummaryAssessment(BaseModel):
     paper_summary: str = Field(
-        description="""Provide a concise, structured summary of the paper focusing on its relevance to neural-symbolic AI. The summary should be 3-4 sentences long and cover these key aspects:
-        1. CONTEXT: Briefly state the problem or challenge in neural-symbolic AI that the paper addresses.
-        2. CONTRIBUTION: Clearly describe what the paper contributes to the field, being specific about any new methods, architectures, or insights presented.
-        3. SIGNIFICANCE: Explain how this work advances neural-symbolic AI, mentioning any notable results or implications for future research.
-            
-        For surveys or review papers, focus on the scope of the review and its key findings or insights rather than specific technical contributions.
-        The summary should be written in clear, academic language and avoid subjective evaluations. Focus on factual content and specific details rather than general statements. Do not simply restate the abstract, but synthesize the paper's key elements into a coherent narrative that emphasizes its relevance to neural-symbolic AI.
+        description="""Provide a comprehensive yet concise assessment (5-7 sentences total) of the paper focusing on its relevance to virtual tutors using large language models (LLMs) in higher education. The assessment should integrate the paper's summary and key takeaways in a structured format:
+
+        1. CONTEXT: Briefly state the educational challenge or opportunity that the paper addresses through LLM-based tutoring systems.
+        
+        2. CONTRIBUTION: Clearly describe what the paper contributes to the field, being specific about:
+           - Novel methods, architectures, or approaches to virtual tutoring
+           - Integration techniques for LLMs in educational contexts
+           - Specific learning tasks or domains supported by the virtual tutor
+        
+        3. IMPLEMENTATION: Outline the technical implementation, including:
+           - Which language models or AI technologies were utilized (e.g., BERT, GPT, LLaMA, T5)
+           - How the system integrates with learning management systems or educational platforms
+           - Key architectural components (e.g., retrieval-augmented generation, knowledge graphs)
+        
+        4. RESULTS: Summarize the most significant empirical findings:
+           - Quantitative learning outcomes or improvements demonstrated
+           - User engagement metrics or satisfaction data
+           - Comparative advantages over traditional tutoring or other AI approaches
+        
+        5. IMPLICATIONS: Highlight the practical significance for higher education:
+           - How this work advances virtual tutoring in educational settings
+           - Notable limitations or challenges identified
+           - Future research directions suggested
+
+        For surveys or review papers, focus on the scope of the review and its key insights about the state of virtual tutors rather than specific technical implementations.
+        
+        Write in clear, academic language and prioritize specific, concrete details over general statements. Emphasize actionable insights and significant contributions that would be valuable for understanding the evolution and current state of virtual tutors using LLMs.
         
         Example format:
-        "This paper addresses [specific challenge] in neural-symbolic AI by [main approach/contribution]. The authors [specific details about method/findings]. This work advances the field by [specific impact or implication]."
+        "This paper addresses [specific educational challenge] by developing a virtual tutor that [main approach/contribution]. The system implements [specific technical details] based on [LLM type/architecture]. The authors demonstrate [specific results/findings], suggesting that [implications for educational practice or research]. Notable limitations include [challenges] which point to future work in [research direction]."
         """,
-        default="Summary not available"
+        default="Assessment not available"
     )
 
-
-class TakeawayAssessment(BaseModel):
-    takeaways: str = Field(
-        description="""Provide a concise (2-4 sentences) summary of the paper's most important takeaways, focusing on actionable insights and significant contributions to neural-symbolic AI. The summary should:
-        1. Identify the paper's main technical or theoretical contribution(s) to neural-symbolic integration, being specific about:
-           - Novel methods, architectures, or theoretical frameworks introduced
-           - Key performance improvements or capabilities demonstrated
-           - Important limitations or challenges identified
-        2. Highlight practical implications such as:
-           - How the work advances the state of neural-symbolic integration
-           - What specific problems or limitations it addresses
-           - Which aspects of prior approaches it improves upon
-        3. Note any significant empirical findings:
-           - Quantitative results that demonstrate advantages over existing approaches
-           - Important experimental insights or unexpected discoveries
-           - Practical constraints or requirements identified
-        
-        Focus on extracting insights that would be valuable for understanding the evolution and current state of neural-symbolic AI. Avoid general descriptions or background information, and instead emphasize specific, concrete findings or advances. If the paper presents multiple contributions, prioritize the most significant or novel ones.
-        """,
-        default="Takeaways not available"
-    )
+# class PaperAssessment(BaseModel):

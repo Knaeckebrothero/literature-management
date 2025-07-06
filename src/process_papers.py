@@ -14,7 +14,7 @@ from dotenv import load_dotenv, find_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.llms import Replicate
-from assessment.paper import PaperAssessment
+from assessment.virtual_tutor_assessment import VirtualTutorAssessment
 import logging
 from datetime import datetime
 
@@ -133,7 +133,6 @@ def extract_doi_from_pdf(pdf_path: str) -> Optional[str]:
                     return doi
 
             # Search first few pages
-            # Search first few pages
             search_phrases = [
                 'doi',
                 'digital object identifier',
@@ -211,18 +210,17 @@ class PdfProcessor:
     """
     ETL class for importing and processing research papers.
     """
-    def __init__(self, prompt_path: str = 'assessment_prompt.txt', db_path: str = 'literature.db'):
+    def __init__(self, db_path: str = 'literature.db'):
         self.conn = sqlite3.connect(db_path)
-        # cursor = self.conn.cursor()
 
         # Initialize LangChain components
         self.llm_open_ai = ChatOpenAI(
-            model="gpt-4o", # gpt-4-turbo gpt-4o-mini
+            model="gpt-4o",
             temperature=0.1,
             seed=3459746589468594
         )
         self.llm_llama = Replicate(
-            model="meta/meta-llama-3.1-405b-instruct", # model="meta/meta-llama-3.1-405b-instruct",
+            model="meta/meta-llama-3.1-405b-instruct",
             model_kwargs={
                 "top_k": 50,
                 "top_p": 1,
@@ -233,24 +231,70 @@ class PdfProcessor:
         )
 
         # Initialize the assessment class
-        self.assessment = PaperAssessment(
-            model=self.llm_open_ai,
-            prompt_path=prompt_path
-        )
+        self.assessment = VirtualTutorAssessment(model=self.llm_open_ai)
 
         # Initialize rate limiter (20 requests per minute)
         self.rate_limiter = RateLimiter(requests_per_minute=20)
 
+        # Create assessment table
+        self._create_assessment_table()
 
     def __del__(self):
         if self.conn:
             self.conn.close()
 
-
     def close(self):
         if self.conn:
             self.conn.close()
 
+    def _create_assessment_table(self):
+        """Create the virtual tutor assessments table"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+                       CREATE TABLE IF NOT EXISTS virtual_tutor_assessments (
+                                                                                paper_id INTEGER PRIMARY KEY,
+                           -- Phase 1
+                                                                                is_virtual_tutor BOOLEAN,
+                                                                                is_implementation BOOLEAN,
+                           -- Phase 2
+                                                                                deployment_status TEXT,
+                                                                                llm_model TEXT,
+                                                                                uses_rag TEXT,
+                                                                                primary_function TEXT,
+                                                                                subject_domain TEXT,
+                                                                                generates_assessments TEXT,
+                           -- Phase 3
+                                                                                publication_type TEXT,
+                                                                                availability TEXT,
+                           -- Phase 4
+                                                                                lms_integration TEXT,
+                                                                                architecture_components TEXT,
+                                                                                interaction_modality TEXT,
+                                                                                analytics_features TEXT,
+                           -- Phase 5
+                                                                                pedagogical_features TEXT,
+                                                                                personalization TEXT,
+                                                                                supports_collaboration TEXT,
+                                                                                collaboration_types TEXT,
+                           -- Phase 6
+                                                                                empirical_evaluation TEXT,
+                                                                                aspects_evaluated TEXT,
+                                                                                sample_size TEXT,
+                                                                                evaluation_duration TEXT,
+                           -- Phase 7
+                                                                                institution_type TEXT,
+                                                                                development_approach TEXT,
+                                                                                language_support TEXT,
+                           -- Phase 8
+                                                                                privacy_protection TEXT,
+                                                                                cost_requirements TEXT,
+                                                                                reference_architecture TEXT,
+                           -- Metadata
+                                                                                assessment_date TIMESTAMP,
+                                                                                FOREIGN KEY (paper_id) REFERENCES papers (id)
+                       )
+                       """)
+        self.conn.commit()
 
     def find_paper_id(self, pdf_path: str) -> Optional[int]:
         """
@@ -308,10 +352,10 @@ class PdfProcessor:
                 # Try each pattern
                 for pattern in patterns:
                     cursor.execute('''
-                        SELECT id, title
-                        FROM papers 
-                        WHERE LOWER(REPLACE(title, ':', '')) LIKE ?
-                    ''', (pattern,))
+                                   SELECT id, title
+                                   FROM papers
+                                   WHERE LOWER(REPLACE(title, ':', '')) LIKE ?
+                                   ''', (pattern,))
 
                     results = cursor.fetchall()
                     if results:
@@ -324,7 +368,6 @@ class PdfProcessor:
 
         print(f"No matching paper found for {pdf_path}")
         return None
-
 
     def process_pdf(self, pdf_path: str) -> Optional[Dict[str, Any]]:
         """Process a single PDF with rate limiting"""
@@ -343,7 +386,7 @@ class PdfProcessor:
             assessment = self.assessment.assess_paper(content)
 
             if assessment is None:
-                logger.info(f"Paper {pdf_path} was not assessed as neurosymbolic")
+                logger.info(f"Paper {pdf_path} is not about virtual tutors")
                 return None
 
             return assessment
@@ -352,35 +395,29 @@ class PdfProcessor:
             logger.error(f"Error processing {pdf_path}: {e}")
             return None
 
-
     def save_assessment(self, paper_id: int, assessment: Dict[str, Any]):
-        """Save paper assessment to database with proper dict access"""
+        """Save paper assessment to database"""
         cursor = self.conn.cursor()
 
         try:
-            cursor.execute('''
-            INSERT OR REPLACE INTO paper_assessments
-            (paper_id, is_neurosymbolic, is_development, paper_type, summary, takeaways, assessment_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                paper_id,
-                assessment['is_neurosymbolic'],
-                assessment['is_development'],
-                assessment['paper_type'],
-                assessment['summary'],
-                assessment['takeaways'],
-                datetime.now().isoformat()
-            ))
+            # Build the SQL dynamically based on available fields
+            fields = list(assessment.keys()) + ['assessment_date', 'paper_id']
+            values = list(assessment.values()) + [datetime.now().isoformat(), paper_id]
+
+            placeholders = ','.join(['?' for _ in values])
+            field_names = ','.join(fields)
+
+            cursor.execute(f'''
+                INSERT OR REPLACE INTO virtual_tutor_assessments
+                ({field_names})
+                VALUES ({placeholders})
+            ''', values)
 
             self.conn.commit()
             logger.info(f"Assessment saved for paper {paper_id}")
 
-        except KeyError as e:
-            logger.error(f"Missing key in assessment dict: {e}")
-            logger.error(f"Assessment dict contents: {assessment}")
         except Exception as e:
             logger.error(f"Error saving assessment: {e}")
-
 
     def process_directory(self, directory_path: str):
         """Process all PDFs in directory with error handling"""
@@ -412,7 +449,8 @@ class PdfProcessor:
                     self.save_assessment(paper_id, assessment)
                     self._mark_paper_processed(paper_id, str(pdf_path))
                 else:
-                    logger.warning(f"No assessment generated for {pdf_path.name}")
+                    logger.warning(f"Paper {pdf_path.name} is not about virtual tutors")
+                    self._mark_paper_unprocessed(paper_id)
 
             except Exception as e:
                 logger.error(f"Error processing {pdf_path.name}: {e}")
@@ -425,18 +463,18 @@ class PdfProcessor:
         """Mark paper as processed in database"""
         cursor = self.conn.cursor()
         cursor.execute('''
-            UPDATE papers
-            SET file_path = ?, processed = 1
-            WHERE id = ?
-        ''', (file_path, paper_id))
+                       UPDATE papers
+                       SET file_path = ?, processed = 1
+                       WHERE id = ?
+                       ''', (file_path, paper_id))
         self.conn.commit()
 
     def _mark_paper_unprocessed(self, paper_id: int):
         """Mark paper as not processed in database"""
         cursor = self.conn.cursor()
         cursor.execute('''
-            UPDATE papers
-            SET processed = 0
-            WHERE id = ?
-        ''', (paper_id,))
+                       UPDATE papers
+                       SET processed = 0
+                       WHERE id = ?
+                       ''', (paper_id,))
         self.conn.commit()
