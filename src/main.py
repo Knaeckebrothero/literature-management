@@ -10,6 +10,8 @@ import logging
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+import networkx as nx
+from datetime import datetime
 from dotenv import find_dotenv, load_dotenv
 from process_papers import PdfProcessor
 from pathlib import Path
@@ -159,9 +161,26 @@ def get_all_papers_query():
                p.*,
                a.is_virtual_tutor,
                a.is_implementation,
+               a.deployment_status,
                a.llm_model,
+               a.uses_rag,
                a.primary_function,
+               a.subject_domain,
+               a.generates_assessments,
+               a.publication_type as assessment_publication_type,
+               a.availability,
+               a.lms_integration,
+               a.personalization,
+               a.supports_collaboration,
                a.empirical_evaluation,
+               a.sample_size,
+               a.evaluation_duration,
+               a.institution_type,
+               a.development_approach,
+               a.language_support,
+               a.privacy_protection,
+               a.cost_requirements,
+               a.reference_architecture,
                a.assessment_date,
                CASE
                    WHEN a.paper_id IS NULL THEN 'Unassessed'
@@ -824,6 +843,898 @@ def display_keywords_tab(papers_df, filters):
         )
 
 
+def display_analysis_tab(papers_df, filters):
+    """Display comprehensive analysis tab with multiple visualization sub-tabs"""
+    st.title("📊 Comprehensive Analysis Dashboard")
+
+    # Apply filters
+    filtered_df = apply_filters(papers_df, filters)
+
+    # Only include assessed papers for most analyses
+    assessed_df = filtered_df[filtered_df['assessment_date'].notna()].copy()
+    vt_df = assessed_df[assessed_df['is_virtual_tutor'] == True].copy()
+
+    if assessed_df.empty:
+        st.warning("No assessed papers found. Please run assessments first.")
+        return
+
+    # Create sub-tabs for different analysis types
+    tabs = st.tabs([
+        "📈 Overview",
+        "🤖 LLM Technology",
+        "🏗️ Architecture",
+        "📚 Pedagogical Features",
+        "📊 Evaluation Insights",
+        "🏛️ Implementation Context",
+        "🔒 Privacy & Compliance",
+        "🔍 Comparative Analysis",
+        "🎯 Research Gaps",
+        "📋 Summary Report"
+    ])
+
+    with tabs[0]:
+        display_assessment_overview(filtered_df, assessed_df, vt_df)
+
+    with tabs[1]:
+        display_llm_technology_analysis(vt_df)
+
+    with tabs[2]:
+        display_architecture_analysis(vt_df)
+
+    with tabs[3]:
+        display_pedagogical_analysis(vt_df)
+
+    with tabs[4]:
+        display_evaluation_insights(vt_df)
+
+    with tabs[5]:
+        display_implementation_context(vt_df)
+
+    with tabs[6]:
+        display_privacy_compliance(vt_df)
+
+    with tabs[7]:
+        display_comparative_analysis(vt_df)
+
+    with tabs[8]:
+        display_research_gaps(vt_df, assessed_df)
+
+    with tabs[9]:
+        display_summary_report(filtered_df, assessed_df, vt_df)
+
+
+def display_assessment_overview(all_df, assessed_df, vt_df):
+    """Display overview metrics and timeline"""
+    st.header("Assessment Overview Dashboard")
+
+    # Key metrics
+    col1, col2, col3, col4 = st.columns(4)
+
+    total_papers = len(all_df)
+    assessed = len(assessed_df)
+    virtual_tutors = len(vt_df)
+    implementations = len(vt_df[vt_df['is_implementation'] == True])
+
+    col1.metric("Assessment Progress",
+                f"{assessed}/{total_papers}",
+                f"{(assessed/total_papers*100):.1f}%" if total_papers > 0 else "0%")
+
+    col2.metric("Virtual Tutors",
+                virtual_tutors,
+                f"{(virtual_tutors/assessed*100):.1f}% of assessed" if assessed > 0 else "0%")
+
+    col3.metric("Implementations",
+                implementations,
+                f"{(implementations/virtual_tutors*100):.1f}% of VT" if virtual_tutors > 0 else "0%")
+
+    col4.metric("Theoretical Papers",
+                virtual_tutors - implementations)
+
+    # Assessment timeline
+    if 'assessment_date' in assessed_df.columns:
+        st.subheader("Assessment Timeline")
+        assessed_df['assessment_date_clean'] = pd.to_datetime(assessed_df['assessment_date'])
+        timeline_df = assessed_df.groupby(assessed_df['assessment_date_clean'].dt.date).size().reset_index()
+        timeline_df.columns = ['Date', 'Papers Assessed']
+
+        fig = px.line(timeline_df, x='Date', y='Papers Assessed',
+                      title="Papers Assessed Over Time", markers=True)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Assessment status distribution
+    col1, col2 = st.columns(2)
+
+    with col1:
+        status_counts = all_df['assessment_status'].value_counts()
+        fig = px.pie(values=status_counts.values, names=status_counts.index,
+                     title="Assessment Status Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        # Publication year vs assessment status
+        year_status = all_df.groupby(['publication_year', 'assessment_status']).size().reset_index(name='count')
+        fig = px.bar(year_status, x='publication_year', y='count', color='assessment_status',
+                     title="Assessment Status by Publication Year")
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def display_llm_technology_analysis(vt_df):
+    """Display LLM technology landscape analysis"""
+    st.header("🤖 LLM Technology Analysis")
+
+    if vt_df.empty:
+        st.warning("No virtual tutor papers found.")
+        return
+
+    # Sunburst chart: LLM Model → Primary Function → Subject Domain
+    st.subheader("LLM Technology Landscape")
+
+    # Check if required columns exist
+    required_cols = ['llm_model', 'primary_function', 'subject_domain']
+    missing_cols = [col for col in required_cols if col not in vt_df.columns]
+
+    if missing_cols:
+        st.warning(f"Missing columns for sunburst chart: {', '.join(missing_cols)}")
+        st.info("This may be because papers haven't been fully assessed yet.")
+    else:
+        # Prepare data for sunburst
+        sunburst_df = vt_df[required_cols].copy()
+        sunburst_df = sunburst_df.dropna()
+
+        if not sunburst_df.empty:
+            fig = px.sunburst(sunburst_df,
+                              path=['llm_model', 'primary_function', 'subject_domain'],
+                              title="Hierarchical View: LLM Model → Function → Domain")
+            fig.update_traces(textinfo="label+percent parent")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No complete data available for sunburst visualization.")
+
+    # Heatmap: LLM Model vs Deployment Status
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if 'deployment_status' in vt_df.columns and 'llm_model' in vt_df.columns:
+            heatmap_df = vt_df[['llm_model', 'deployment_status']].dropna()
+            if not heatmap_df.empty:
+                heatmap_data = pd.crosstab(heatmap_df['llm_model'], heatmap_df['deployment_status'])
+                fig = px.imshow(heatmap_data,
+                                labels=dict(x="Deployment Status", y="LLM Model", color="Count"),
+                                title="LLM Models by Deployment Status",
+                                aspect="auto")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No deployment status data available.")
+        else:
+            st.info("Deployment status information not available.")
+
+    with col2:
+        # Timeline: Evolution of LLM adoption
+        if 'llm_model' in vt_df.columns:
+            llm_timeline_df = vt_df[['publication_year', 'llm_model']].dropna()
+            if not llm_timeline_df.empty:
+                llm_timeline = llm_timeline_df.groupby(['publication_year', 'llm_model']).size().reset_index(name='count')
+                fig = px.line(llm_timeline, x='publication_year', y='count', color='llm_model',
+                              title="LLM Adoption Timeline", markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No LLM timeline data available.")
+        else:
+            st.info("LLM model information not available.")
+
+    # RAG adoption analysis
+    st.subheader("RAG (Retrieval-Augmented Generation) Analysis")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if 'uses_rag' in vt_df.columns:
+            rag_df = vt_df['uses_rag'].dropna()
+            if not rag_df.empty:
+                rag_counts = rag_df.value_counts()
+                fig = px.pie(values=rag_counts.values, names=rag_counts.index,
+                             title="RAG Adoption in Virtual Tutors")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No RAG usage data available.")
+        else:
+            st.info("RAG information not available.")
+
+    with col2:
+        # RAG usage by LLM model
+        if 'llm_model' in vt_df.columns and 'uses_rag' in vt_df.columns:
+            rag_llm_df = vt_df[['llm_model', 'uses_rag']].dropna()
+            if not rag_llm_df.empty:
+                rag_by_llm = pd.crosstab(rag_llm_df['llm_model'], rag_llm_df['uses_rag'])
+                fig = px.bar(rag_by_llm.T, title="RAG Usage by LLM Model", barmode='group')
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No RAG by LLM model data available.")
+        else:
+            st.info("Insufficient data for RAG by LLM analysis.")
+
+
+def display_architecture_analysis(vt_df):
+    """Display technical architecture patterns analysis"""
+    st.header("🏗️ Technical Architecture Analysis")
+
+    # LMS Integration distribution
+    st.subheader("LMS Integration Patterns")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if 'lms_integration' in vt_df.columns:
+            lms_counts = vt_df['lms_integration'].value_counts()
+            fig = px.bar(x=lms_counts.values, y=lms_counts.index, orientation='h',
+                         title="LMS Integration Types")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        # Architecture components analysis
+        if 'architecture_components' in vt_df.columns:
+            # Split comma-separated values and count
+            all_components = []
+            for components in vt_df['architecture_components'].dropna():
+                if components:
+                    all_components.extend([c.strip() for c in components.split(',')])
+
+            if all_components:
+                component_counts = pd.Series(all_components).value_counts()
+                fig = px.bar(x=component_counts.values, y=component_counts.index,
+                             orientation='h', title="Architecture Components Frequency")
+                st.plotly_chart(fig, use_container_width=True)
+
+    # Interaction modalities
+    st.subheader("Interaction Modalities")
+    if 'interaction_modality' in vt_df.columns:
+        # Process interaction modalities
+        all_modalities = []
+        for modalities in vt_df['interaction_modality'].dropna():
+            if modalities:
+                all_modalities.extend([m.strip() for m in modalities.split(',')])
+
+        if all_modalities:
+            modality_counts = pd.Series(all_modalities).value_counts()
+            fig = px.pie(values=modality_counts.values, names=modality_counts.index,
+                         title="Distribution of Interaction Modalities")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Analytics features
+    st.subheader("Learning Analytics Features")
+    if 'analytics_features' in vt_df.columns:
+        all_analytics = []
+        for features in vt_df['analytics_features'].dropna():
+            if features and features != 'none_mentioned':
+                all_analytics.extend([f.strip() for f in features.split(',')])
+
+        if all_analytics:
+            analytics_counts = pd.Series(all_analytics).value_counts()
+            fig = px.bar(analytics_counts, orientation='h',
+                         title="Analytics Features Implementation",
+                         labels={'value': 'Count', 'index': 'Feature'})
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def display_pedagogical_analysis(vt_df):
+    """Display pedagogical features analysis"""
+    st.header("📚 Pedagogical Features Analysis")
+
+    # Pedagogical features heatmap
+    st.subheader("Pedagogical Features Implementation")
+
+    if 'pedagogical_features' in vt_df.columns:
+        # Create a matrix of papers vs features
+        feature_matrix = []
+        paper_titles = []
+
+        for idx, row in vt_df.iterrows():
+            if pd.notna(row['pedagogical_features']) and row['pedagogical_features']:
+                features = [f.strip() for f in row['pedagogical_features'].split(',')]
+                feature_matrix.append(features)
+                paper_titles.append(row['title'][:50] + '...' if len(row['title']) > 50 else row['title'])
+
+        if feature_matrix:
+            # Get all unique features
+            all_features = set()
+            for features in feature_matrix:
+                all_features.update(features)
+            all_features = sorted(list(all_features))
+
+            # Create binary matrix
+            matrix_data = []
+            for features in feature_matrix:
+                row = [1 if f in features else 0 for f in all_features]
+                matrix_data.append(row)
+
+            if len(paper_titles) <= 20:  # Only show heatmap for reasonable number of papers
+                df_matrix = pd.DataFrame(matrix_data, index=paper_titles, columns=all_features)
+                fig = px.imshow(df_matrix,
+                                labels=dict(x="Features", y="Papers", color="Implemented"),
+                                title="Pedagogical Features by Paper",
+                                aspect="auto",
+                                color_continuous_scale="Blues")
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Feature frequency
+            feature_counts = pd.Series([f for features in feature_matrix for f in features]).value_counts()
+            fig = px.bar(x=feature_counts.values, y=feature_counts.index, orientation='h',
+                         title="Pedagogical Features Frequency")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Personalization and collaboration analysis
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if 'personalization' in vt_df.columns:
+            personal_counts = vt_df['personalization'].value_counts()
+            fig = px.pie(values=personal_counts.values, names=personal_counts.index,
+                         title="Personalization Approaches")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        if 'supports_collaboration' in vt_df.columns:
+            collab_counts = vt_df['supports_collaboration'].value_counts()
+            fig = px.pie(values=collab_counts.values, names=collab_counts.index,
+                         title="Collaboration Support")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Collaboration types
+    if 'collaboration_types' in vt_df.columns:
+        all_collab_types = []
+        for types in vt_df['collaboration_types'].dropna():
+            if types:
+                all_collab_types.extend([t.strip() for t in types.split(',')])
+
+        if all_collab_types:
+            collab_type_counts = pd.Series(all_collab_types).value_counts()
+            fig = px.bar(collab_type_counts, orientation='h',
+                         title="Types of Collaboration Supported",
+                         labels={'value': 'Count', 'index': 'Collaboration Type'})
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def display_evaluation_insights(vt_df):
+    """Display evaluation and empirical evidence analysis"""
+    st.header("📊 Evaluation Insights")
+
+    # Evaluation overview
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if 'empirical_evaluation' in vt_df.columns:
+            eval_counts = vt_df['empirical_evaluation'].value_counts()
+            fig = px.pie(values=eval_counts.values, names=eval_counts.index,
+                         title="Types of Empirical Evaluation")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        # Sample size distribution
+        if 'sample_size' in vt_df.columns:
+            sample_counts = vt_df['sample_size'].value_counts()
+            fig = px.bar(x=sample_counts.index, y=sample_counts.values,
+                         title="Sample Size Distribution")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Bubble chart: Sample size vs Duration vs Aspects evaluated
+    st.subheader("Evaluation Characteristics")
+
+    eval_df = vt_df[['empirical_evaluation', 'sample_size', 'evaluation_duration', 'aspects_evaluated']].copy()
+    eval_df = eval_df[eval_df['empirical_evaluation'] != 'no_evaluation'].dropna(subset=['sample_size'])
+
+    if not eval_df.empty:
+        # Map categorical values to numeric for visualization
+        size_map = {'less_than_50': 25, '50_to_200': 125, '201_to_500': 350, 'more_than_500': 750}
+        duration_map = {'single_session': 1, 'less_than_month': 15, 'one_semester': 120,
+                        'multiple_semesters': 240, 'longitudinal': 365}
+
+        eval_df['size_numeric'] = eval_df['sample_size'].map(size_map)
+        eval_df['duration_numeric'] = eval_df['evaluation_duration'].map(duration_map)
+
+        # Count aspects evaluated
+        eval_df['aspect_count'] = eval_df['aspects_evaluated'].apply(
+            lambda x: len(x.split(',')) if pd.notna(x) else 0
+        )
+
+        fig = px.scatter(eval_df, x='duration_numeric', y='size_numeric',
+                         size='aspect_count', color='empirical_evaluation',
+                         hover_data=['sample_size', 'evaluation_duration'],
+                         labels={'duration_numeric': 'Duration (days)',
+                                 'size_numeric': 'Sample Size',
+                                 'aspect_count': 'Aspects Evaluated'},
+                         title="Evaluation Scope: Duration vs Sample Size vs Aspects")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Aspects evaluated
+    st.subheader("Aspects Evaluated in Studies")
+    if 'aspects_evaluated' in vt_df.columns:
+        all_aspects = []
+        for aspects in vt_df['aspects_evaluated'].dropna():
+            if aspects and aspects != 'not_applicable':
+                all_aspects.extend([a.strip() for a in aspects.split(',')])
+
+        if all_aspects:
+            aspect_counts = pd.Series(all_aspects).value_counts()
+            fig = px.bar(x=aspect_counts.values, y=aspect_counts.index, orientation='h',
+                         title="Frequency of Evaluated Aspects")
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def display_implementation_context(vt_df):
+    """Display implementation context analysis"""
+    st.header("🏛️ Implementation Context")
+
+    impl_df = vt_df[vt_df['is_implementation'] == True].copy()
+
+    if impl_df.empty:
+        st.warning("No implementation papers found.")
+        return
+
+    # Institution types
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if 'institution_type' in impl_df.columns:
+            inst_counts = impl_df['institution_type'].value_counts()
+            fig = px.pie(values=inst_counts.values, names=inst_counts.index,
+                         title="Institution Types")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        # Development approach
+        if 'development_approach' in impl_df.columns:
+            dev_counts = impl_df['development_approach'].value_counts()
+            fig = px.bar(x=dev_counts.values, y=dev_counts.index, orientation='h',
+                         title="Development Approaches")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Language support analysis
+    st.subheader("Language Support")
+    if 'language_support' in impl_df.columns:
+        lang_counts = impl_df['language_support'].value_counts()
+        fig = px.bar(lang_counts, title="Language Support Distribution",
+                     labels={'value': 'Count', 'index': 'Language Support'})
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Geographic distribution (if venue data provides hints)
+    st.subheader("Publication Venues by Region")
+    # This is a simplified analysis based on venue names
+    venue_regions = {
+        'german': ['TU', 'Universität', 'Hochschule', 'FH', 'RWTH', 'LMU'],
+        'us': ['MIT', 'Stanford', 'Berkeley', 'CMU', 'Georgia Tech'],
+        'uk': ['Oxford', 'Cambridge', 'Imperial', 'UCL'],
+        'other': []
+    }
+
+    def classify_region(venue):
+        if pd.isna(venue):
+            return 'Unknown'
+        venue_lower = venue.lower()
+        for region, keywords in venue_regions.items():
+            if any(keyword.lower() in venue_lower for keyword in keywords):
+                return region.upper()
+        return 'Other'
+
+    impl_df['region'] = impl_df['venue'].apply(classify_region)
+    region_counts = impl_df['region'].value_counts()
+
+    fig = px.pie(values=region_counts.values, names=region_counts.index,
+                 title="Approximate Regional Distribution (based on venue)")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def display_privacy_compliance(vt_df):
+    """Display privacy and compliance analysis"""
+    st.header("🔒 Privacy & Compliance Analysis")
+
+    # Privacy protection overview
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if 'privacy_protection' in vt_df.columns:
+            privacy_counts = vt_df['privacy_protection'].value_counts()
+            fig = px.pie(values=privacy_counts.values, names=privacy_counts.index,
+                         title="Privacy Protection Measures")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        # Cost requirements
+        if 'cost_requirements' in vt_df.columns:
+            cost_counts = vt_df['cost_requirements'].value_counts()
+            fig = px.bar(x=cost_counts.values, y=cost_counts.index, orientation='h',
+                         title="Cost/Resource Requirements")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # GDPR compliance timeline
+    st.subheader("Privacy Awareness Over Time")
+    if 'privacy_protection' in vt_df.columns and 'publication_year' in vt_df.columns:
+        privacy_timeline = pd.crosstab(vt_df['publication_year'], vt_df['privacy_protection'])
+        fig = px.bar(privacy_timeline.T, title="Privacy Protection Mentions by Year",
+                     barmode='stack')
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Reference architecture usage
+    st.subheader("Reference Architecture Adoption")
+    if 'reference_architecture' in vt_df.columns:
+        ref_arch_counts = vt_df['reference_architecture'].value_counts()
+        fig = px.pie(values=ref_arch_counts.values, names=ref_arch_counts.index,
+                     title="Use of Reference Architectures")
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def display_comparative_analysis(vt_df):
+    """Display comparative analysis tools"""
+    st.header("🔍 Comparative Analysis")
+
+    # Feature comparison matrix
+    st.subheader("Virtual Tutor Feature Comparison")
+
+    # Select papers to compare
+    paper_titles = vt_df['title'].tolist()
+    if len(paper_titles) > 1:
+        selected_papers = st.multiselect(
+            "Select papers to compare (max 5):",
+            paper_titles,
+            default=paper_titles[:min(3, len(paper_titles))],
+            max_selections=5
+        )
+
+        if selected_papers:
+            comparison_df = vt_df[vt_df['title'].isin(selected_papers)].copy()
+
+            # Create comparison matrix
+            features_to_compare = [
+                'llm_model', 'uses_rag', 'primary_function', 'subject_domain',
+                'lms_integration', 'personalization', 'supports_collaboration',
+                'empirical_evaluation', 'sample_size', 'privacy_protection'
+            ]
+
+            comparison_data = []
+            for _, paper in comparison_df.iterrows():
+                row_data = {'Title': paper['title'][:50] + '...'}
+                for feature in features_to_compare:
+                    if feature in paper:
+                        row_data[feature.replace('_', ' ').title()] = paper[feature]
+                comparison_data.append(row_data)
+
+            comparison_table = pd.DataFrame(comparison_data)
+            st.dataframe(comparison_table.set_index('Title'), use_container_width=True)
+
+            # Download comparison
+            csv = comparison_table.to_csv(index=False)
+            st.download_button(
+                "Download Comparison CSV",
+                csv,
+                "vt_comparison.csv",
+                "text/csv"
+            )
+
+    # Feature co-occurrence analysis
+    st.subheader("Feature Co-occurrence Analysis")
+
+    # Analyze which features often appear together
+    feature_pairs = []
+
+    for _, row in vt_df.iterrows():
+        # Check pairs of binary features
+        binary_features = {
+            'uses_rag': row.get('uses_rag') == 'yes',
+            'generates_assessments': row.get('generates_assessments') == 'yes',
+            'supports_collaboration': row.get('supports_collaboration') == 'yes',
+            'has_evaluation': row.get('empirical_evaluation') not in ['no_evaluation', 'not_specified'],
+            'is_implementation': row.get('is_implementation') == True
+        }
+
+        feature_names = list(binary_features.keys())
+        for i in range(len(feature_names)):
+            for j in range(i+1, len(feature_names)):
+                if binary_features[feature_names[i]] and binary_features[feature_names[j]]:
+                    feature_pairs.append((feature_names[i], feature_names[j]))
+
+    if feature_pairs:
+        pair_counts = pd.Series(feature_pairs).value_counts()
+
+        # Create network visualization
+        G = nx.Graph()
+        for (f1, f2), count in pair_counts.items():
+            if count > 1:  # Only show pairs that occur more than once
+                G.add_edge(f1, f2, weight=count)
+
+        if G.number_of_nodes() > 0:
+            pos = nx.spring_layout(G)
+
+            # Create edge trace
+            edge_trace = []
+            for edge in G.edges(data=True):
+                x0, y0 = pos[edge[0]]
+                x1, y1 = pos[edge[1]]
+                edge_trace.append(go.Scatter(
+                    x=[x0, x1], y=[y0, y1],
+                    line=dict(width=edge[2]['weight'], color='#888'),
+                    hoverinfo='none',
+                    mode='lines'
+                ))
+
+            # Create node trace
+            node_x = [pos[node][0] for node in G.nodes()]
+            node_y = [pos[node][1] for node in G.nodes()]
+
+            node_trace = go.Scatter(
+                x=node_x, y=node_y,
+                mode='markers+text',
+                hoverinfo='text',
+                text=[node.replace('_', ' ').title() for node in G.nodes()],
+                textposition="top center",
+                marker=dict(size=20, color='lightblue', line_width=2)
+            )
+
+            fig = go.Figure(data=edge_trace + [node_trace],
+                            layout=go.Layout(
+                                title="Feature Co-occurrence Network",
+                                showlegend=False,
+                                hovermode='closest',
+                                xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+                            ))
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def safe_value_counts(df, column, default_message="No data available"):
+    """Safely get value counts for a column, handling missing columns"""
+    if column in df.columns:
+        counts = df[column].dropna().value_counts()
+        if not counts.empty:
+            return counts
+    return None
+
+
+def display_research_gaps(vt_df, assessed_df):
+    """Identify and display research gaps"""
+    st.header("🎯 Research Gap Analysis")
+
+    # Under-researched domains
+    st.subheader("Under-researched Subject Domains")
+    if 'subject_domain' in vt_df.columns:
+        domain_counts = vt_df['subject_domain'].value_counts()
+
+        # Define expected domains
+        all_domains = ['computer_science', 'mathematics', 'natural_sciences',
+                       'engineering', 'languages', 'social_sciences']
+
+        missing_domains = [d for d in all_domains if d not in domain_counts.index]
+        under_researched = domain_counts[domain_counts < 3].index.tolist()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**Missing Domains:**")
+            if missing_domains:
+                for domain in missing_domains:
+                    st.write(f"- {domain.replace('_', ' ').title()}")
+            else:
+                st.write("All major domains have some representation")
+
+        with col2:
+            st.write("**Under-researched Domains (<3 papers):**")
+            if under_researched:
+                for domain in under_researched:
+                    count = domain_counts[domain]
+                    st.write(f"- {domain.replace('_', ' ').title()}: {count} papers")
+            else:
+                st.write("All domains have adequate representation")
+    else:
+        st.info("Subject domain information not available in the dataset.")
+
+    # Missing evaluation types
+    st.subheader("Evaluation Gaps")
+    if 'empirical_evaluation' in vt_df.columns:
+        eval_df = vt_df['empirical_evaluation'].dropna()
+        if not eval_df.empty:
+            no_eval = len(eval_df[eval_df.isin(['no_evaluation', 'not_specified'])])
+            total = len(eval_df)
+
+            if total > 0:
+                st.metric("Papers without Evaluation",
+                          f"{no_eval}/{total}",
+                          f"{(no_eval/total*100):.1f}%")
+
+                # Evaluation type by year
+                eval_year_df = vt_df[['publication_year', 'empirical_evaluation']].dropna()
+                if not eval_year_df.empty:
+                    eval_by_year = pd.crosstab(
+                        eval_year_df['publication_year'],
+                        eval_year_df['empirical_evaluation'] != 'no_evaluation'
+                    )
+                    eval_by_year.columns = ['No Evaluation', 'Has Evaluation']
+
+                    fig = px.bar(eval_by_year, title="Evaluation Status by Year",
+                                 barmode='stack')
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No evaluation data available.")
+    else:
+        st.info("Evaluation information not available in the dataset.")
+
+    # LLM model diversity
+    st.subheader("LLM Model Coverage")
+    if 'llm_model' in vt_df.columns:
+        model_df = vt_df['llm_model'].dropna()
+        if not model_df.empty:
+            model_counts = model_df.value_counts()
+
+            # Expected models
+            major_models = ['gpt_35_4', 'claude', 'llama', 'gemini']
+            missing_models = [m for m in major_models if m not in model_counts.index]
+
+            if missing_models:
+                st.write("**Major LLMs not yet studied:**")
+                for model in missing_models:
+                    st.write(f"- {model.upper()}")
+            else:
+                st.write("All major LLM models have been studied.")
+        else:
+            st.info("No LLM model data available.")
+    else:
+        st.info("LLM model information not available in the dataset.")
+
+    # Feature implementation gaps
+    st.subheader("Feature Implementation Gaps")
+
+    # Calculate implementation rates for key features
+    feature_rates = {}
+
+    if 'uses_rag' in vt_df.columns:
+        rag_yes = (vt_df['uses_rag'] == 'yes').sum()
+        feature_rates['RAG Implementation'] = rag_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
+
+    if 'generates_assessments' in vt_df.columns:
+        gen_yes = (vt_df['generates_assessments'] == 'yes').sum()
+        feature_rates['Generates Assessments'] = gen_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
+
+    if 'supports_collaboration' in vt_df.columns:
+        collab_yes = (vt_df['supports_collaboration'] == 'yes').sum()
+        feature_rates['Supports Collaboration'] = collab_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
+
+    if 'personalization' in vt_df.columns:
+        personal_yes = (vt_df['personalization'] != 'no_personalization').sum()
+        feature_rates['Has Personalization'] = personal_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
+
+    if 'privacy_protection' in vt_df.columns:
+        privacy_yes = (vt_df['privacy_protection'] != 'not_mentioned').sum()
+        feature_rates['Privacy Addressed'] = privacy_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
+
+    if feature_rates:
+        rates_df = pd.DataFrame(list(feature_rates.items()), columns=['Feature', 'Implementation Rate'])
+        fig = px.bar(rates_df, x='Feature', y='Implementation Rate',
+                     title="Feature Implementation Rates (%)",
+                     color='Implementation Rate',
+                     color_continuous_scale='RdYlGn')
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Feature implementation data not available.")
+
+
+def display_summary_report(all_df, assessed_df, vt_df):
+    """Generate and display a comprehensive summary report"""
+    st.header("📋 Summary Report")
+
+    st.write("### Executive Summary")
+
+    # Key findings
+    total_papers = len(all_df)
+    assessed_papers = len(assessed_df)
+    vt_papers = len(vt_df)
+    impl_papers = len(vt_df[vt_df['is_implementation'] == True])
+
+    summary_text = f"""
+    This systematic literature review analyzed **{total_papers} papers** on virtual tutors in higher education. 
+    Of these, **{assessed_papers} papers ({assessed_papers/total_papers*100:.1f}%)** have been fully assessed.
+    
+    **Key Findings:**
+    - **{vt_papers} papers** describe virtual tutors using large language models
+    - **{impl_papers} papers ({impl_papers/vt_papers*100:.1f}%)** present actual implementations
+    - **{vt_papers - impl_papers} papers** are theoretical or conceptual
+    
+    **Technology Landscape:**
+    """
+    st.write(summary_text)
+
+    # Top technologies
+    if 'llm_model' in vt_df.columns:
+        top_llms = vt_df['llm_model'].value_counts().head(3)
+        st.write("**Most Used LLMs:**")
+        for llm, count in top_llms.items():
+            st.write(f"- {llm}: {count} papers ({count/vt_papers*100:.1f}%)")
+
+    # Research recommendations
+    st.write("### Research Recommendations")
+
+    recommendations = []
+
+    # Check for evaluation gaps
+    if 'empirical_evaluation' in vt_df.columns:
+        no_eval_rate = (vt_df['empirical_evaluation'].isin(['no_evaluation', 'not_specified'])).sum() / len(vt_df)
+        if no_eval_rate > 0.5:
+            recommendations.append("- **Increase empirical evaluations**: Over 50% of virtual tutors lack proper evaluation")
+
+    # Check for domain diversity
+    if 'subject_domain' in vt_df.columns:
+        unique_domains = vt_df['subject_domain'].nunique()
+        if unique_domains < 5:
+            recommendations.append("- **Expand domain coverage**: Virtual tutors are concentrated in few subject areas")
+
+    # Check for privacy concerns
+    if 'privacy_protection' in vt_df.columns:
+        privacy_addressed = (vt_df['privacy_protection'] != 'not_mentioned').sum() / len(vt_df)
+        if privacy_addressed < 0.3:
+            recommendations.append("- **Address privacy concerns**: Less than 30% of papers discuss data protection")
+
+    for rec in recommendations:
+        st.write(rec)
+
+    # Export options
+    st.write("### Export Options")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # Full dataset export
+        csv = vt_df.to_csv(index=False)
+        st.download_button(
+            "📊 Export Full VT Dataset",
+            csv,
+            "virtual_tutors_full.csv",
+            "text/csv"
+        )
+
+    with col2:
+        # Summary statistics export
+        summary_stats = {
+            'Total Papers': total_papers,
+            'Assessed Papers': assessed_papers,
+            'Virtual Tutor Papers': vt_papers,
+            'Implementation Papers': impl_papers,
+            'Papers with Evaluation': len(vt_df[~vt_df['empirical_evaluation'].isin(['no_evaluation', 'not_specified'])]),
+            'Papers with RAG': len(vt_df[vt_df['uses_rag'] == 'yes']),
+            'Papers with Collaboration': len(vt_df[vt_df['supports_collaboration'] == 'yes'])
+        }
+        summary_df = pd.DataFrame(list(summary_stats.items()), columns=['Metric', 'Count'])
+        csv = summary_df.to_csv(index=False)
+        st.download_button(
+            "📈 Export Summary Stats",
+            csv,
+            "summary_statistics.csv",
+            "text/csv"
+        )
+
+    with col3:
+        # Generate a text report
+        report_text = f"""
+SYSTEMATIC LITERATURE REVIEW - VIRTUAL TUTORS IN HIGHER EDUCATION
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+OVERVIEW
+========
+Total Papers Analyzed: {total_papers}
+Papers Assessed: {assessed_papers}
+Virtual Tutor Papers: {vt_papers}
+Implementation Papers: {impl_papers}
+
+KEY FINDINGS
+============
+{summary_text}
+
+RECOMMENDATIONS
+===============
+{"".join(recommendations)}
+
+This report was automatically generated from the systematic literature review database.
+        """
+        st.download_button(
+            "📄 Export Text Report",
+            report_text,
+            "slr_report.txt",
+            "text/plain"
+        )
+
+
 def main():
     load_dotenv(find_dotenv())
     st.set_page_config(
@@ -907,8 +1818,8 @@ def main():
     filters = create_filters(papers_df)
 
     # Create tabs
-    papers_tab, assessments_tab, keywords_tab, papers_view_tab, add_paper_tab = st.tabs([
-        "Papers", "Aggregated Assessments", "Keyword Analysis", "Paper Assessments", "Add Paper"
+    papers_tab, assessments_tab, keywords_tab, analysis_tab, papers_view_tab, add_paper_tab = st.tabs([
+        "Papers", "Aggregated Assessments", "Keyword Analysis", "📊 Analysis", "Paper Assessments", "Add Paper"
     ])
 
     with papers_tab:
@@ -926,6 +1837,9 @@ def main():
 
     with add_paper_tab:
         add_paper()
+
+    with analysis_tab:
+        display_analysis_tab(papers_df, filters)
 
 
 if __name__ == "__main__":
