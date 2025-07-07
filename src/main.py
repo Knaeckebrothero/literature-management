@@ -2029,29 +2029,29 @@ def display_assessment_matrix(papers_df, vt_df):
 def color_code_cell(val):
     """Apply color coding to matrix cells based on value"""
     if pd.isna(val):
-        return 'background-color: #f0f0f0'
+        return 'background-color: #f0f0f0'  # Light gray for NaN values
 
     # Convert to string for comparison
     val_str = str(val).lower()
 
-    # Positive values (green shades)
+    # Positive values (distinct green)
     if val_str in ['yes', 'freely_available', 'controlled_experiment',
                    'production_use', 'gdpr_discussed', 'data_protection_described']:
-        return 'background-color: #90EE90'
+        return 'background-color: #00AA55'  # Vibrant green
 
-    # Neutral/medium values (yellow shades)
+    # Neutral/medium values (yellow/orange)
     elif val_str in ['pilot_deployment', 'pilot_study', 'available_on_request',
                      'research_prototype', 'privacy_addressed']:
-        return 'background-color: #FFFFE0'
+        return 'background-color: #FFC300'  # Vivid yellow/amber
 
-    # Negative values (red shades)
+    # Negative values (deeper red)
     elif val_str in ['no', 'no_evaluation', 'not_available', 'discontinued',
                      'not_mentioned']:
-        return 'background-color: #FFB6C1'
+        return 'background-color: #E74C3C'  # Strong red
 
-    # Not specified (gray)
+    # Not specified (blue-gray)
     elif val_str in ['not_specified', 'not_clear']:
-        return 'background-color: #D3D3D3'
+        return 'background-color: #7F8C8D'  # Distinct gray with blue tint
 
     # Default for other values
     else:
