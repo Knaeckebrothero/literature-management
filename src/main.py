@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import json
+import logging
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
@@ -14,6 +15,11 @@ from process_papers import PdfProcessor
 from pathlib import Path
 from import_citations import CitationProcessor
 from view_paper import papers_view
+
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @st.cache_resource
@@ -31,144 +37,39 @@ def get_connection():
     return conn
 
 
-def setup_database_with_connection(conn):
-    """Setup database using existing connection"""
+def setup_database_with_connection(conn, schema_path='src/schema.sql'):
+    """Setup database using schema.sql file with existing connection"""
     cursor = conn.cursor()
 
-    # Enable foreign key constraints
-    cursor.execute("PRAGMA foreign_keys = ON")
+    try:
+        # Check if schema file exists
+        if not Path(schema_path).exists():
+            st.error(f"Schema file '{schema_path}' not found!")
+            st.info("Make sure schema.sql is in the same directory as main.py")
+            raise FileNotFoundError(f"Schema file '{schema_path}' not found")
 
-    # Main table for papers
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS papers (
-                                                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                         doi TEXT UNIQUE,
-                                                         title TEXT,
-                                                         publication_year INTEGER,
-                                                         authors TEXT,
-                                                         venue TEXT,
-                                                         volume TEXT,
-                                                         publication_type TEXT,
-                                                         publication_source TEXT,
-                                                         processed BOOLEAN DEFAULT 0,
-                                                         file_path TEXT DEFAULT NULL
-                   )
-                   """)
+        # Read schema from file
+        with open(schema_path, 'r', encoding='utf-8') as f:
+            schema_sql = f.read()
 
-    # Table for virtual tutor assessments
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS virtual_tutor_assessments (
-                                                                            paper_id INTEGER PRIMARY KEY,
-                       -- Phase 1
-                                                                            is_virtual_tutor BOOLEAN,
-                                                                            is_implementation BOOLEAN,
-                       -- Phase 2
-                                                                            deployment_status TEXT,
-                                                                            llm_model TEXT,
-                                                                            uses_rag TEXT,
-                                                                            primary_function TEXT,
-                                                                            subject_domain TEXT,
-                                                                            generates_assessments TEXT,
-                       -- Phase 3
-                                                                            publication_type TEXT,
-                                                                            availability TEXT,
-                       -- Phase 4
-                                                                            lms_integration TEXT,
-                       -- Phase 5
-                                                                            personalization TEXT,
-                                                                            supports_collaboration TEXT,
-                       -- Phase 6
-                                                                            empirical_evaluation TEXT,
-                                                                            sample_size TEXT,
-                                                                            evaluation_duration TEXT,
-                       -- Phase 7
-                                                                            institution_type TEXT,
-                                                                            development_approach TEXT,
-                                                                            language_support TEXT,
-                       -- Phase 8
-                                                                            privacy_protection TEXT,
-                                                                            cost_requirements TEXT,
-                                                                            reference_architecture TEXT,
-                       -- Metadata
-                                                                            assessment_date TIMESTAMP,
-                                                                            FOREIGN KEY (paper_id) REFERENCES papers (id)
-                       )
-                   """)
+        # Execute the schema
+        conn.executescript(schema_sql)
 
-    # Table for keywords
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS keywords (
-                                                           id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                           keyword TEXT UNIQUE
-                   )
-                   """)
+        # Commit changes
+        conn.commit()
 
-    # Relationship table for keywords and papers
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS rel_keywords_papers (
-                                                                      paper_id INTEGER,
-                                                                      keyword_id INTEGER,
-                                                                      FOREIGN KEY (paper_id) REFERENCES papers (id),
-                       FOREIGN KEY (keyword_id) REFERENCES keywords (id)
-                       )
-                   """)
+        # Log success
+        logger.info(f"Database initialized successfully using {schema_path}")
 
-    # Add normalized tables for list fields
-    list_tables = [
-        """
-        CREATE TABLE IF NOT EXISTS assessment_architecture_components (
-                                                                          paper_id INTEGER,
-                                                                          component TEXT,
-                                                                          PRIMARY KEY (paper_id, component),
-            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-            )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS assessment_interaction_modalities (
-                                                                         paper_id INTEGER,
-                                                                         modality TEXT,
-                                                                         PRIMARY KEY (paper_id, modality),
-            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-            )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS assessment_analytics_features (
-                                                                     paper_id INTEGER,
-                                                                     feature TEXT,
-                                                                     PRIMARY KEY (paper_id, feature),
-            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-            )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS assessment_pedagogical_features (
-                                                                       paper_id INTEGER,
-                                                                       feature TEXT,
-                                                                       PRIMARY KEY (paper_id, feature),
-            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-            )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS assessment_collaboration_types (
-                                                                      paper_id INTEGER,
-                                                                      collaboration_type TEXT,
-                                                                      PRIMARY KEY (paper_id, collaboration_type),
-            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-            )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS assessment_aspects_evaluated (
-                                                                    paper_id INTEGER,
-                                                                    aspect TEXT,
-                                                                    PRIMARY KEY (paper_id, aspect),
-            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-            )
-        """
-    ]
-
-    for table_sql in list_tables:
-        cursor.execute(table_sql)
-
-    conn.commit()
+    except FileNotFoundError as e:
+        logger.error(f"Schema file error: {e}")
+        raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error during schema creation: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during database setup: {e}")
+        raise
 
 
 def load_data_with_lists(base_query=None):
