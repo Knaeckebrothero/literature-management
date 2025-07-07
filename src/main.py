@@ -1542,7 +1542,29 @@ def display_research_gaps(vt_df, assessed_df):
                         eval_year_df['publication_year'],
                         eval_year_df['empirical_evaluation'] != 'no_evaluation'
                     )
-                    eval_by_year.columns = ['No Evaluation', 'Has Evaluation']
+
+                    # Handle the case where crosstab only returns one column
+                    if len(eval_by_year.columns) == 1:
+                        # Check which column we have (True or False)
+                        col_value = eval_by_year.columns[0]
+
+                        # Create a DataFrame with both columns
+                        years = eval_by_year.index
+                        if col_value == True:
+                            # We only have "Has Evaluation" data
+                            eval_by_year = pd.DataFrame({
+                                'No Evaluation': 0,
+                                'Has Evaluation': eval_by_year.iloc[:, 0]
+                            }, index=years)
+                        else:
+                            # We only have "No Evaluation" data
+                            eval_by_year = pd.DataFrame({
+                                'No Evaluation': eval_by_year.iloc[:, 0],
+                                'Has Evaluation': 0
+                            }, index=years)
+                    else:
+                        # We have both columns, rename them
+                        eval_by_year.columns = ['No Evaluation', 'Has Evaluation']
 
                     fig = px.bar(eval_by_year, title="Evaluation Status by Year",
                                  barmode='stack')
