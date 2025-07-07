@@ -7,7 +7,9 @@ import pandas as pd
 import sqlite3
 import json
 import logging
+import io
 import numpy as np
+import xlsxwriter
 import plotly.graph_objects as go
 import plotly.express as px
 import networkx as nx
@@ -869,7 +871,8 @@ def display_analysis_tab(papers_df, filters):
         "🔒 Privacy & Compliance",
         "🔍 Comparative Analysis",
         "🎯 Research Gaps",
-        "📋 Summary Report"
+        "📋 Summary Report",
+        "🔢 Assessment Matrix"  # New tab!
     ])
 
     with tabs[0]:
@@ -901,6 +904,9 @@ def display_analysis_tab(papers_df, filters):
 
     with tabs[9]:
         display_summary_report(filtered_df, assessed_df, vt_df)
+
+    with tabs[10]:  # New Assessment Matrix tab
+        display_assessment_matrix(papers_df, vt_df)
 
 
 def display_assessment_overview(all_df, assessed_df, vt_df):
@@ -1755,6 +1761,301 @@ This report was automatically generated from the systematic literature review da
             "slr_report.txt",
             "text/plain"
         )
+
+def display_assessment_matrix(papers_df, vt_df):
+    """Display comprehensive assessment matrix for all papers"""
+    st.header("📊 Assessment Matrix")
+
+    st.markdown("""
+    This matrix shows all assessment questions (columns) for selected papers (rows).
+    Use this to get a comprehensive overview of how different virtual tutors compare across all dimensions.
+    """)
+
+    # Filter options
+    col1, col2, col3 = st.columns([2, 1, 1])
+
+    with col1:
+        # Paper selection mode
+        selection_mode = st.radio(
+            "Select papers to display:",
+            ["All Virtual Tutors", "Implementation Papers Only", "Custom Selection"],
+            horizontal=True
+        )
+
+    # Get the appropriate dataframe based on selection
+    if selection_mode == "All Virtual Tutors":
+        matrix_df = vt_df.copy()
+    elif selection_mode == "Implementation Papers Only":
+        matrix_df = vt_df[vt_df['is_implementation'] == True].copy()
+    else:  # Custom Selection
+        paper_titles = vt_df['title'].tolist()
+        selected_titles = st.multiselect(
+            "Select papers to include in matrix:",
+            paper_titles,
+            default=paper_titles[:min(10, len(paper_titles))]
+        )
+        matrix_df = vt_df[vt_df['title'].isin(selected_titles)].copy()
+
+    if matrix_df.empty:
+        st.warning("No papers selected. Please adjust your selection criteria.")
+        return
+
+    with col2:
+        # Display options
+        show_full_titles = st.checkbox("Show full titles", value=False)
+
+    with col3:
+        # Color coding option
+        color_code = st.checkbox("Color code values", value=True)
+
+    # Define assessment categories and their questions
+    assessment_categories = {
+        "Phase 1: Filtering": [
+            'is_virtual_tutor', 'is_implementation'
+        ],
+        "Phase 2: Core System": [
+            'deployment_status', 'llm_model', 'uses_rag', 'primary_function',
+            'subject_domain', 'generates_assessments'
+        ],
+        "Phase 3: Publication": [
+            'assessment_publication_type', 'availability'
+        ],
+        "Phase 4: Technical": [
+            'lms_integration', 'architecture_components', 'interaction_modality',
+            'analytics_features'
+        ],
+        "Phase 5: Pedagogical": [
+            'pedagogical_features', 'personalization', 'supports_collaboration',
+            'collaboration_types'
+        ],
+        "Phase 6: Evaluation": [
+            'empirical_evaluation', 'aspects_evaluated', 'sample_size',
+            'evaluation_duration'
+        ],
+        "Phase 7: Context": [
+            'institution_type', 'development_approach', 'language_support'
+        ],
+        "Phase 8: Additional": [
+            'privacy_protection', 'cost_requirements', 'reference_architecture'
+        ]
+    }
+
+    # Category filter
+    selected_categories = st.multiselect(
+        "Select assessment categories to display:",
+        list(assessment_categories.keys()),
+        default=list(assessment_categories.keys())
+    )
+
+    # Build columns list based on selected categories
+    display_columns = []
+    for category in selected_categories:
+        display_columns.extend(assessment_categories[category])
+
+    # Filter to only existing columns
+    display_columns = [col for col in display_columns if col in matrix_df.columns]
+
+    if not display_columns:
+        st.warning("No assessment data available for the selected categories.")
+        return
+
+    # Prepare display dataframe
+    # Create paper identifiers
+    if show_full_titles:
+        matrix_df['Paper'] = matrix_df['title']
+    else:
+        matrix_df['Paper'] = matrix_df['title'].apply(
+            lambda x: x[:60] + '...' if len(x) > 60 else x
+        )
+
+    # Add publication year to paper identifier
+    matrix_df['Paper'] = matrix_df.apply(
+        lambda row: f"{row['Paper']} ({row['publication_year']})", axis=1
+    )
+
+    # Select only the columns we want to display
+    display_df = matrix_df[['Paper'] + display_columns].set_index('Paper')
+
+    # Apply color coding if requested
+    if color_code:
+        styled_df = display_df.style.applymap(color_code_cell)
+        st.dataframe(styled_df, use_container_width=True, height=600)
+    else:
+        st.dataframe(display_df, use_container_width=True, height=600)
+
+    # Summary statistics
+    st.subheader("Coverage Statistics")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # Calculate completeness
+        total_cells = len(display_df) * len(display_df.columns)
+        non_null_cells = display_df.notna().sum().sum()
+        completeness = (non_null_cells / total_cells * 100) if total_cells > 0 else 0
+
+        st.metric(
+            "Matrix Completeness",
+            f"{completeness:.1f}%",
+            help="Percentage of non-null values in the matrix"
+        )
+
+    with col2:
+        st.metric(
+            "Papers Displayed",
+            len(display_df),
+            help="Number of papers in the current view"
+        )
+
+    with col3:
+        st.metric(
+            "Questions Displayed",
+            len(display_columns),
+            help="Number of assessment questions shown"
+        )
+
+    # Field completeness chart
+    st.subheader("Field Completeness Analysis")
+
+    field_completeness = (display_df.notna().sum() / len(display_df) * 100).sort_values(ascending=True)
+
+    fig = px.bar(
+        x=field_completeness.values,
+        y=field_completeness.index,
+        orientation='h',
+        title="Completeness by Assessment Question (%)",
+        labels={'x': 'Completeness (%)', 'y': 'Assessment Question'}
+    )
+    fig.update_layout(height=max(400, len(field_completeness) * 20))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Export options
+    st.subheader("Export Options")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # Export full matrix
+        csv = display_df.to_csv()
+        st.download_button(
+            "📊 Export Matrix (CSV)",
+            csv,
+            "assessment_matrix.csv",
+            "text/csv"
+        )
+
+    with col2:
+        # Export transposed matrix
+        transposed_csv = display_df.T.to_csv()
+        st.download_button(
+            "🔄 Export Transposed (CSV)",
+            transposed_csv,
+            "assessment_matrix_transposed.csv",
+            "text/csv"
+        )
+
+    with col3:
+        # Export to Excel with formatting
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            display_df.to_excel(writer, sheet_name='Assessment Matrix')
+
+            # Get workbook and worksheet
+            workbook = writer.book
+            worksheet = writer.sheets['Assessment Matrix']
+
+            # Add formatting
+            header_format = workbook.add_format({
+                'bold': True,
+                'text_wrap': True,
+                'valign': 'top',
+                'bg_color': '#D7E4BD',
+                'border': 1
+            })
+
+            # Apply header formatting
+            for col_num, value in enumerate(display_df.columns.values):
+                worksheet.write(0, col_num + 1, value, header_format)
+
+            # Auto-fit columns
+            worksheet.set_column(0, 0, 50)  # Paper titles
+            worksheet.set_column(1, len(display_df.columns), 20)  # Data columns
+
+        buffer.seek(0)
+        st.download_button(
+            "📑 Export to Excel",
+            buffer,
+            "assessment_matrix.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # Interactive heatmap view
+    st.subheader("Interactive Heatmap View")
+
+    # Convert categorical data to numeric for heatmap
+    numeric_df = display_df.copy()
+
+    # Define value mappings for common categorical values
+    value_mappings = {
+        'yes': 3, 'no': 1, 'not_specified': 0,
+        'controlled_experiment': 4, 'pilot_study': 3, 'survey_only': 2,
+        'no_evaluation': 1, 'not_specified': 0,
+        'research_prototype': 1, 'pilot_deployment': 2, 'production_use': 3,
+        'discontinued': 0, 'not_specified': 0,
+        'freely_available': 3, 'available_on_request': 2, 'commercial_license': 1,
+        'internal_use_only': 1, 'not_available': 0, 'not_specified': 0
+    }
+
+    # Apply mappings
+    for col in numeric_df.columns:
+        if numeric_df[col].dtype == 'object':
+            numeric_df[col] = numeric_df[col].map(
+                lambda x: value_mappings.get(x, 2) if pd.notna(x) else 0
+            )
+
+    # Create heatmap
+    fig = px.imshow(
+        numeric_df.T,
+        labels=dict(x="Papers", y="Assessment Questions", color="Value"),
+        title="Assessment Matrix Heatmap",
+        aspect="auto",
+        color_continuous_scale="RdYlGn"
+    )
+    fig.update_xaxes(showticklabels=False)  # Hide x labels for clarity
+    fig.update_layout(height=max(600, len(display_columns) * 20))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def color_code_cell(val):
+    """Apply color coding to matrix cells based on value"""
+    if pd.isna(val):
+        return 'background-color: #f0f0f0'
+
+    # Convert to string for comparison
+    val_str = str(val).lower()
+
+    # Positive values (green shades)
+    if val_str in ['yes', 'freely_available', 'controlled_experiment',
+                   'production_use', 'gdpr_discussed', 'data_protection_described']:
+        return 'background-color: #90EE90'
+
+    # Neutral/medium values (yellow shades)
+    elif val_str in ['pilot_deployment', 'pilot_study', 'available_on_request',
+                     'research_prototype', 'privacy_addressed']:
+        return 'background-color: #FFFFE0'
+
+    # Negative values (red shades)
+    elif val_str in ['no', 'no_evaluation', 'not_available', 'discontinued',
+                     'not_mentioned']:
+        return 'background-color: #FFB6C1'
+
+    # Not specified (gray)
+    elif val_str in ['not_specified', 'not_clear']:
+        return 'background-color: #D3D3D3'
+
+    # Default for other values
+    else:
+        return ''
 
 
 def main():

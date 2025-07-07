@@ -13,5 +13,6 @@ bibtexparser
 replicate
 networkx
 scipy
+xlsxwriter
 # transformers or transformers[torch]
 # accelerate
