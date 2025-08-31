@@ -1,5 +1,13 @@
 """
-Streamlit page for viewing individual paper assessments from the SLR database.
+This module contains functions for interacting with an SQLite database to
+retrieve, filter, and display details about academic papers, along with
+their assessment data across various evaluation phases.
+
+The module integrates filtering, normalization of list fields, and visualization
+capabilities, making it suitable for exploring and assessing attributes of
+papers related to virtual tutors, AI systems, and collaborative learning in
+higher education.
+
 """
 import streamlit as st
 import pandas as pd
@@ -9,12 +17,41 @@ from pathlib import Path
 
 
 def get_connection():
-    """Create a connection to the SQLite database."""
+    """
+    Establishes and returns a connection to the SQLite database.
+
+    This function creates a connection instance for accessing the SQLite
+    database named 'literature.db'. The connection is configured with
+    check_same_thread set to False, enabling shared access across threads.
+
+    Returns:
+        sqlite3.Connection: The connection object for interacting with
+        the SQLite database.
+    """
     return sqlite3.connect('literature.db', check_same_thread=False)
 
 
 def load_paper_details():
-    """Load all paper details with their assessments including normalized list fields."""
+    """
+    Load paper details and assessments into a DataFrame.
+
+    This function retrieves information about academic papers, including their metadata
+    and associated virtual tutor assessments, from a database. It performs a base query
+    to gather core information and then enriches the resulting DataFrame with additional
+    list fields, such as architecture components or interaction modalities, by joining
+    data from related tables.
+
+    Function execution ensures the data is consolidated and returned in a structured format
+    suitable for analysis or further processing. The function also guarantees ordered results
+    based on assessment date and publication year.
+
+    Args:
+        None
+
+    Returns:
+        pandas.DataFrame: A DataFrame containing consolidated information about papers with
+        additional assessment details, if available.
+    """
     conn = get_connection()
 
     # Base query without list fields
@@ -129,7 +166,31 @@ def load_paper_details():
 
 
 def apply_filters(df, filters):
-    """Apply filters to a dataframe"""
+    """
+    Filters the provided DataFrame based on the specified filter criteria.
+
+    This function offers the capability to filter rows in the input DataFrame using various
+    criteria provided in the `filters` dictionary. Each filter (e.g., years, LLM model, focus,
+    evaluation) selectively filters the data based on its specific condition, refining the
+    DataFrame to only include rows matching the given filter values.
+
+    Parameters:
+    df: pandas.DataFrame
+        The DataFrame to be filtered. Expected to have columns such as `publication_year`,
+        `llm_model`, `assessment_status`, `is_implementation`, and `empirical_evaluation`.
+    filters: dict
+        Dictionary containing the filter criteria. May contain the following keys:
+        - 'years' (list of int): Filters rows where the `publication_year` is in the list.
+        - 'llm_model' (str): Filters rows by the specified LLM model. Excludes "All".
+        - 'focus' (str): Filters rows based on the assessment status and implementation.
+          Acceptable values: "Virtual Tutor", "Implementation", "Unassessed/Other".
+        - 'evaluation' (str): Filters rows based on the empirical evaluation category.
+          Acceptable values: "Evaluated", "Other".
+
+    Returns:
+    pandas.DataFrame
+        A filtered DataFrame containing rows satisfying the specified filtering criteria.
+    """
     filtered_df = df.copy()
 
     # Handle year filter
@@ -170,7 +231,26 @@ def apply_filters(df, filters):
 
 
 def display_paper_details(paper, papers_dir: str = "papers"):
-    """Display detailed information about a single paper."""
+    """
+    Displays detailed information about a paper within an interactive Streamlit application interface.
+
+    This function extracts and organizes data from a given paper and displays specific details
+    categorized into multiple phases, such as general details, core information, system characteristics,
+    technical architecture, pedagogical features, evaluation, implementation context, and additional
+    information. With conditional rendering, it adjusts the content based on the availability of certain
+    attributes. Additionally, the function allows downloading the associated PDF file and optionally
+    previewing it within the application.
+
+    Parameters:
+        paper (dict): A dictionary containing the metadata and attributes of the paper.
+        papers_dir (str, optional): The directory where paper PDFs are stored. Default value: "papers".
+
+    Raises:
+        Warning notifications in the Streamlit UI if certain paper assessments or data are unavailable.
+
+    Returns:
+        None
+    """
     st.header("Paper Details")
 
     # Basic paper information
@@ -343,7 +423,20 @@ def display_paper_details(paper, papers_dir: str = "papers"):
 
 
 def papers_view(filters=None):
-    """Main function for the papers view page."""
+    """
+    Displays a Streamlit view for assessing and managing virtual tutor papers, including
+    features such as filtering, selection of papers, status visualization, and export
+    capability for selected papers.
+
+    Parameters:
+    filters: Optional[dict]
+        A dictionary containing filter criteria for narrowing down the list of papers.
+        If None, no filters are applied, and all papers are displayed.
+
+    Raises:
+    sqlite3.OperationalError
+        If there is a database error while loading paper details.
+    """
     st.title("Virtual Tutor Paper Assessments")
 
     # Load all paper details

@@ -1,12 +1,29 @@
 """
-Test script to verify the virtual tutor assessment system
+This module provides functionality for testing the virtual tutor assessment system, utilizing
+samples of academic papers to evaluate their content. The module includes a function to
+initialize necessary settings, load environment variables, and test the assessment system to
+determine whether the paper pertains to a virtual tutor system.
+
+The primary components and dependencies include OpenAI language models, an assessment framework,
+and logging utilities to track the test process.
+
+Modules:
+- dotenv: To manage environment variables.
+- langchain_openai: To initialize and configure an OpenAI model.
+- assessment.virtual_tutor_assessment: To perform the assessment of the given papers.
+
+Logging: This module uses Python’s built-in logging library to output progress and results.
+
+Environment Variables:
+Environmental configurations are loaded at runtime using dotenv to support external API
+integration.
 """
 import logging
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from assessment.virtual_tutor_assessment import VirtualTutorAssessment
 
-# Configure logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -65,7 +82,29 @@ Deep learning continues to push the boundaries of image classification performan
 
 
 def test_assessment_system():
-    """Test the virtual tutor assessment system with sample papers"""
+    """
+    Tests the functionality of the Virtual Tutor Assessment system using two sample papers:
+    one related to virtual tutors and one not.
+
+    The function performs the following steps:
+    1. Loads environment variables required for initializing the model.
+    2. Creates a language learning model (LLM) instance based on the specified
+       model configuration.
+    3. Initializes the Virtual Tutor Assessment system using the LLM.
+    4. Assesses a sample virtual tutor-related paper, verifying the results and
+       outputting key assessment details, alongside the full results.
+    5. Assesses a non-virtual tutor paper to ensure it is correctly identified
+       as irrelevant to virtual tutors.
+    6. Logs outcomes and summarizes the testing process.
+
+    Parameters: None
+
+    Raises:
+        Any raised errors are not explicitly handled in this function.
+
+    Return:
+        This function does not return a value.
+    """
 
     # Load environment variables
     load_dotenv()

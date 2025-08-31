@@ -1,7 +1,11 @@
 """
-Script to process citation files from various sources and consolidate them into a SQLite database.
-Supports BibTeX, IEEE CSV, Springer CSV, DBLP CSV, and ProQuest CSV formats.
-Papers with DOIs go to the main 'papers' table, those without to 'papers_no_doi'.
+A module for processing and managing bibliographic citations and metadata.
+
+This module encapsulates functionalities for processing bibliographic data
+from various sources (e.g., BibTeX files, IEEE CSV files, Springer CSV files)
+and storing them in an SQLite database. It includes handling metadata such as
+DOIs, authors, titles, keywords, and other publication details. The module is
+geared towards ensuring efficient deduplication and standardized data storage.
 """
 import bibtexparser
 import sqlite3
@@ -12,7 +16,18 @@ from typing import Dict
 
 def _standardize_doi(doi: str) -> str:
     """
-    Function to standardize the DOI format by removing common prefixes.
+    Standardizes a Digital Object Identifier (DOI) string by removing
+    common URL prefixes and unnecessary whitespace.
+
+    Parameters:
+    doi: str
+        The DOI string to standardize. May contain URL prefixes or
+        extra whitespace.
+
+    Returns:
+    str
+        The standardized DOI string with prefixes and whitespace removed.
+        Returns an empty string if the input DOI is empty.
     """
     if not doi:
         return ''
@@ -41,6 +56,23 @@ def _print_stats(stats: Dict[str, int]):
 
 
 class CitationProcessor:
+    """
+    Handles operations related to processing citations from various data sources.
+
+    This class provides functionality for managing and processing citation data from different
+    file formats (e.g., BibTeX, IEEE CSV, Springer CSV). It connects to a SQLite database
+    and facilitates the insertion of papers, their metadata, and their relationships with keywords.
+
+    Attributes:
+        db_name: The name of the database file to connect to and store citation data.
+        conn: The SQLite database connection object.
+        processed_dois: A set to track DOIs for duplicate checks during paper insertion.
+        processed_titles_authors: A set to track titles and authors to identify duplicates
+            in the no_doi table.
+
+    Raises:
+        sqlite3.Error: For any database-related errors during processing.
+    """
     def __init__(self, db_name: str = 'literature.db'):
         """
         Initialize the citation processor with database connection
@@ -63,12 +95,20 @@ class CitationProcessor:
 
     def process_keywords(self, paper_id: int, keywords: list[str]):
         """
-        Process a list of keywords for a paper, adding them to the keywords table if they don't exist
-        and creating relationships in the rel_keywords_papers table.
+        Processes and associates keywords with a specific paper in the database.
 
-        Args:
-            paper_id: The ID of the paper in the papers table
-            keywords: List of keyword strings to process
+        This method is responsible for cleaning the provided list of keywords, ensuring that
+        each keyword is uniquely stored in the database, and then creating a relationship
+        between the specified paper and its associated keywords. Any errors encountered during
+        the database transactions are logged to provide visibility into potential issues.
+
+        Parameters:
+            paper_id (int): The identifier of the paper to associate with the provided keywords.
+            keywords (list[str]): A list of keywords to be processed and linked to the paper.
+
+        Raises:
+            sqlite3.Error: Raised if a database error occurs during any of the operations.
+
         """
         cursor = self.conn.cursor()
 
@@ -103,7 +143,22 @@ class CitationProcessor:
 
     def _insert_paper(self, paper_data: Dict) -> str:
         """
-        Function to insert a paper into the appropriate table.
+        Inserts a new paper into the database if it is not already present.
+
+        The method ensures that duplicate papers with the same DOI are not inserted by
+        checking both a processed DOI set and the database. Additionally, it standardizes
+        the DOI format before insertion to prevent mismatches due to formatting
+        discrepancies.
+
+        Parameters:
+            paper_data (Dict): A dictionary containing details of the paper such as
+                'doi', 'title', 'publication_year', 'authors', 'venue', 'volume',
+                'publication_type', and 'publication_source'.
+
+        Returns:
+            str: A status indicating the result of the operation. Possible values are:
+                - 'duplicate': The paper already exists in the database or processed DOI set.
+                - 'inserted': The paper was successfully added to the database.
         """
         cursor = self.conn.cursor()
 
@@ -135,7 +190,18 @@ class CitationProcessor:
 
     def _process_bibtex(self, file_path: str):
         """
-        Method to process a BibTeX file.
+        Processes a BibTeX file and inserts paper entries into the database. Extracts relevant
+        information from each entry in the BibTeX data, standardizes the data, and attempts to
+        insert it. Keeps statistics on the number of entries processed, inserted, duplicate entries,
+        and entries without DOI. Also processes keywords for successfully inserted papers.
+
+        Parameters:
+            file_path: str
+                The file path to the BibTeX file to be processed.
+
+        Raises:
+            FileNotFoundError: If the specified `file_path` does not exist.
+            IOError: For I/O-related issues like permission errors when accessing the file.
         """
         source_file = Path(file_path).name
         stats = {'inserted': 0, 'duplicate': 0, 'no_doi': 0}
@@ -176,7 +242,23 @@ class CitationProcessor:
 
     def _process_ieee_csv(self, file_path: str):
         """
-        Method to process IEEE CSV file.
+        Processes a CSV file containing IEEE publication data and updates the database accordingly.
+
+        Summary:
+        This method reads a CSV file, extracts relevant publication data, and processes the
+        content to insert the information into the database. It also tracks statistics of
+        inserted papers, duplicate entries, and entries without a DOI. Additionally, for newly
+        inserted papers, it handles associated keywords if available.
+
+        Parameters:
+        file_path: str
+            Path to the CSV file containing IEEE publication data.
+
+        Raises:
+        Any exceptions occurring during file reading, data processing, or database connections.
+
+        Returns:
+        None
         """
         stats = {'inserted': 0, 'duplicate': 0, 'no_doi': 0}
         df = pd.read_csv(file_path)
@@ -219,7 +301,20 @@ class CitationProcessor:
 
     def _process_springer_csv(self, file_path: str):
         """
-        Method to process Springer CSV file.
+        Processes the given Springer CSV file and extracts relevant publication data to insert into the database.
+
+        This method reads a Springer CSV file, extracts information such as DOI, title, publication year, authors,
+        venue, volume, and publication type for each entry, and attempts to insert these details into a database
+        or data store. Summary statistics of the processing (inserted, duplicate, no DOI) are printed at the end
+        of the execution.
+
+        Parameters:
+            file_path: str
+                The file path to the Springer CSV file.
+
+        Raises:
+            FileNotFoundError: If the provided file path does not exist.
+            ValueError: If the file fails to follow the expected format or contains invalid data.
         """
         source_file = Path(file_path).name
         stats = {'inserted': 0, 'duplicate': 0, 'no_doi': 0}
@@ -248,7 +343,22 @@ class CitationProcessor:
 
     def process_files(self, file_config: Dict[str, list]):
         """
-        Method to process all files based on their type.
+        Processes a collection of files grouped by their type.
+
+        This method iterates through a given configuration of files grouped by file type.
+        For each file, it checks if the file exists and processes it based on its type. If
+        the file is not found or an error occurs during processing, it logs the relevant
+        information. The method handles 'bibtex', 'ieee', and 'springer' file types using
+        dedicated internal processing functions. It ensures system resources are properly
+        released by calling the `close` method regardless of any processing errors.
+
+        Parameters:
+            file_config (Dict[str, list]): A dictionary mapping file types to lists of
+                file paths to be processed.
+
+        Raises:
+            Exception: Generic exception raised during the processing of each file to
+                log specific errors encountered during file processing.
         """
         try:
             for file_type, files in file_config.items():

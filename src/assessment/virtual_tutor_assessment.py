@@ -1,9 +1,17 @@
 """
-Main Virtual Tutor Assessment class that orchestrates all phases
+Provides functionality for orchestrating a multi-phase assessment of papers related
+to virtual tutors. The assessment is performed through eight distinct phases,
+each handling specific aspects of the paper.
+
+The module supports filtering papers, analyzing system characteristics, extracting
+publication metadata, evaluating technical architectures, identifying pedagogical
+features, and more. Results from all phases are combined into a final assessment.
+
+Classes:
+- VirtualTutorAssessment: Main class orchestrating all phases of the assessment.
 """
 import logging
 from typing import Dict, Any, Optional
-from assessment.models import VirtualTutorAssessmentResult
 from assessment.phases.phase1_filtering import Phase1Processor
 from assessment.phases.phase2_core import Phase2Processor
 from assessment.phases.phase3_metadata import Phase3Processor
@@ -13,11 +21,31 @@ from assessment.phases.phase6_evaluation import Phase6Processor
 from assessment.phases.phase7_context import Phase7Processor
 from assessment.phases.phase8_additional import Phase8Processor
 
+
 logger = logging.getLogger(__name__)
 
 
 class VirtualTutorAssessment:
-    """Orchestrates the multi-phase virtual tutor assessment"""
+    """
+    Manages the process of assessing research papers about virtual tutors through multiple phases.
+
+    This class evaluates the content of a research paper, performs various analyses, and combines
+    results from multiple phases of processing. These phases cover aspects like core characteristics,
+    pedagogical features, technical architecture, and more. The assessment process includes conditional
+    logic to determine the scope of evaluation based on the nature of the paper.
+
+    Attributes:
+        model: The core language model used for processing.
+        api_call_count: Tracks the number of API calls made during the assessment.
+        phase1: Processor responsible for initial filtering (Phase 1).
+        phase2: Processor for identifying and analyzing core system characteristics (Phase 2).
+        phase3: Processor for extracting and analyzing publication metadata (Phase 3).
+        phase4: Processor for analyzing technical architecture (Phase 4).
+        phase5: Processor for evaluating pedagogical features (Phase 5).
+        phase6: Processor for capturing evaluation details (Phase 6).
+        phase7: Processor for assessing the context of implementation (Phase 7).
+        phase8: Processor for other additional considerations (Phase 8).
+    """
 
     def __init__(self, model):
         self.model = model
@@ -36,8 +64,20 @@ class VirtualTutorAssessment:
 
     def assess_paper(self, content: str) -> Optional[Dict[str, Any]]:
         """
-        Assess a paper through all phases with conditional logic.
-        Returns None if paper is not about virtual tutors.
+        Assesses a research paper by analyzing its content through various phases of processing.
+        Each phase contributes specific characteristics, metadata, and evaluation details that
+        help produce a comprehensive assessment of the paper. Different phases may be skipped
+        or adjusted depending on the nature of the paper (e.g., implementation-focused or theoretical).
+
+        Attributes:
+            api_call_count: Tracks the number of API calls made during the assessment process.
+
+        Parameters:
+            content (str): The content of the research paper to be analyzed.
+
+        Returns:
+            Optional[Dict[str, Any]]: A dictionary containing combined results from all processing
+            phases if the paper meets the filtering criteria, otherwise None.
         """
         logger.info("Starting virtual tutor assessment")
         self.api_call_count = 0
@@ -100,9 +140,6 @@ class VirtualTutorAssessment:
         logger.info("Phase 8: Additional considerations")
         self.api_call_count += 1
         phase8_result = self.phase8.process(content)
-
-        # Combine results from all phases
-        # ... (rest of the method is unchanged)
 
         logger.info(f"Assessment complete. Total API calls: {self.api_call_count}")
 

@@ -1,3 +1,12 @@
+"""
+A module defining models for paper assessment including initial and type-based evaluations.
+
+This module contains classes to assess papers in the context of their focus, categorization, and relevance to specific AI-related educational advancements or neural-symbolic methods. It provides structured assessments using field descriptors for clarity and consistency.
+
+Classes:
+- InitialAssessment: Evaluates whether a paper is primarily about virtual tutors using large language models (LLMs) in higher education contexts.
+- TypeAssessment: Categorizes papers based on their main contribution and content type, with predefined categories.
+"""
 from pydantic import BaseModel, Field
 from typing import Literal
 
