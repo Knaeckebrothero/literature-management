@@ -4,11 +4,7 @@ from typing import Literal
 
 class InitialAssessment(BaseModel):
     is_neurosymbolic: bool = Field(
-        description="Whether the paper is primarily about neurosymbolic AI. This is the case if at least half of the paper's total content deals with or focuses on topics that involve combining or integrating symbolic reasoning, knowledge representation, or logic-based approaches with neural network architectures. Key indicators include substantial discussion of hybrid systems, neural-symbolic integration techniques, or applications of neurosymbolic methods to AI problems. Papers that only briefly mention neurosymbolic AI without significant elaboration should not be considered primarily about the topic."
-    )
-
-    is_development: bool = Field(
-        description="Whether the paper presents a significant development in neurosymbolic AI. This includes introducing novel architectures, frameworks, or algorithms that advance the state-of-the-art in integrating symbolic reasoning with neural networks. Key developments should demonstrate improved performance, efficiency, or capabilities compared to existing approaches. They may address fundamental challenges in neurosymbolic AI, such as enhancing interpretability, incorporating prior knowledge, or enabling logical reasoning. Significant developments can also include innovative applications of neurosymbolic methods to real-world problems or domains where traditional approaches struggle. Incremental improvements or minor variations on existing techniques should not be considered key developments."
+        description="Whether the paper is primarily about virtual tutors using large language models (LLMs). This is the case if at least one fourth of the paper's total content deals with or focuses on AI-based educational agents, chatbots, or virtual teaching assistants that leverage LLMs or similar language technologies to support learning in higher education contexts. Key indicators include substantial discussion of: LLM-based tutoring systems, educational dialogue agents, automated question answering for academic subjects, personalized learning via AI tutors, integration of language models with educational platforms, retrieval-augmented generation for educational content, implementation of virtual teaching assistants, or empirical studies measuring learning outcomes from LLM-based tutoring. Papers that only briefly mention AI in education or language models without significant elaboration on their application to tutoring should not be considered primarily about the topic."
     )
 
 

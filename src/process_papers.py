@@ -14,7 +14,7 @@ from dotenv import load_dotenv, find_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.llms import Replicate
-from assessment.paper import PaperAssessment
+from assessment.virtual_tutor_assessment import VirtualTutorAssessment
 import logging
 from datetime import datetime
 
@@ -45,7 +45,7 @@ def standardize_doi(doi: str) -> Optional[str]:
     if not doi:
         return None
 
-    print(f"Original DOI string: {doi}")
+    # print(f"Original DOI string: {doi}")
 
     # Remove common prefixes and whitespace
     doi = doi.lower().strip()
@@ -63,7 +63,7 @@ def standardize_doi(doi: str) -> Optional[str]:
         if doi.startswith(prefix):
             doi = doi[len(prefix):]
 
-    print(f"After prefix removal: {doi}")
+    # print(f"After prefix removal: {doi}")
 
     # Define patterns for different DOI formats
     patterns = [
@@ -132,7 +132,6 @@ def extract_doi_from_pdf(pdf_path: str) -> Optional[str]:
                 if doi:
                     return doi
 
-            # Search first few pages
             # Search first few pages
             search_phrases = [
                 'doi',
@@ -207,22 +206,157 @@ def extract_title_from_pdf(pdf_path: str) -> Optional[str]:
         return None
 
 
+def extract_authors_from_pdf(pdf_path: str) -> Optional[str]:
+    """Extract authors from PDF metadata or content"""
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
+
+            # Try metadata first
+            if pdf.metadata and '/Author' in pdf.metadata:
+                return pdf.metadata['/Author'].strip()
+
+            # Try to extract from first page
+            first_page_text = pdf.pages[0].extract_text()
+            lines = first_page_text.split('\n')
+
+            # Look for author patterns (usually after title)
+            title = extract_title_from_pdf(pdf_path)
+            if title:
+                title_lower = title[:30].lower()
+                for i, line in enumerate(lines):
+                    if title_lower in line.lower() and i + 1 < len(lines):
+                        # Authors often appear right after title
+                        potential_authors = []
+                        for j in range(i + 1, min(i + 5, len(lines))):
+                            next_line = lines[j].strip()
+                            # Stop if we hit abstract or other sections
+                            if any(kw in next_line.lower() for kw in ['abstract', 'introduction', 'keywords', '1.']):
+                                break
+                            if next_line and len(next_line) > 5:
+                                potential_authors.append(next_line)
+
+                        if potential_authors:
+                            return ', '.join(potential_authors[:2])  # Take first 2 lines as authors
+
+            return None
+    except Exception as e:
+        logger.error(f"Error extracting authors from {pdf_path}: {e}")
+        return None
+
+
+def extract_year_from_pdf(pdf_path: str) -> Optional[int]:
+    """Extract publication year from PDF metadata or content"""
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
+
+            # Try metadata first
+            if pdf.metadata and '/CreationDate' in pdf.metadata:
+                date_str = pdf.metadata['/CreationDate']
+                # Parse PDF date format (D:YYYYMMDDHHmmSS)
+                year_match = re.search(r'D:(\d{4})', date_str)
+                if year_match:
+                    return int(year_match.group(1))
+
+            # Search for year patterns in first few pages
+            for i in range(min(3, len(pdf.pages))):
+                text = pdf.pages[i].extract_text()
+
+                # Look for arXiv pattern
+                arxiv_match = re.search(r'arXiv:(\d{2})(\d{2})\.\d{4,5}', text)
+                if arxiv_match:
+                    year = int('20' + arxiv_match.group(1))
+                    return year
+
+                # Look for copyright year
+                copyright_match = re.search(r'©\s*(\d{4})', text)
+                if copyright_match:
+                    return int(copyright_match.group(1))
+
+                # Look for common year patterns
+                year_patterns = [
+                    r'(19|20)\d{2}',  # Basic year
+                    r'published.*?(19|20)\d{2}',
+                    r'accepted.*?(19|20)\d{2}',
+                    r'submitted.*?(19|20)\d{2}'
+                ]
+
+                for pattern in year_patterns:
+                    matches = re.findall(pattern, text, re.IGNORECASE)
+                    if matches:
+                        # Get the most recent year
+                        years = [int(m) if isinstance(m, str) and m.isdigit() else int(m[0] + m[1])
+                                 for m in matches if isinstance(m, (str, tuple))]
+                        valid_years = [y for y in years if 1990 <= y <= datetime.now().year + 1]
+                        if valid_years:
+                            return max(valid_years)
+
+            return None
+    except Exception as e:
+        logger.error(f"Error extracting year from {pdf_path}: {e}")
+        return None
+
+
+def extract_full_metadata_from_pdf(pdf_path: str) -> Dict[str, Any]:
+    """Extract comprehensive metadata from PDF"""
+    metadata = {
+        'doi': extract_doi_from_pdf(pdf_path),
+        'title': extract_title_from_pdf(pdf_path),
+        'authors': extract_authors_from_pdf(pdf_path),
+        'year': extract_year_from_pdf(pdf_path),
+        'venue': 'arXiv',
+        'arxiv_id': None
+    }
+
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
+
+            # Search first pages for arXiv patterns
+            for i in range(min(3, len(pdf.pages))):
+                text = pdf.pages[i].extract_text()
+
+                # Look for arXiv ID (e.g., arXiv:2401.12345)
+                arxiv_match = re.search(r'arXiv:(\d{4}\.\d{4,5})', text)
+                if arxiv_match:
+                    metadata['arxiv_id'] = arxiv_match.group(1)
+                    # Extract year from arXiv ID if not already found
+                    if not metadata['year']:
+                        year = int('20' + arxiv_match.group(1)[:2])
+                        if 2000 <= year <= datetime.now().year + 1:
+                            metadata['year'] = year
+                    break
+
+    except Exception as e:
+        logger.error(f"Error extracting full metadata from {pdf_path}: {e}")
+
+    # Set defaults if not found
+    if not metadata['title']:
+        metadata['title'] = Path(pdf_path).stem  # Use filename as fallback
+    if not metadata['authors']:
+        metadata['authors'] = 'Unknown Authors'
+    if not metadata['year']:
+        metadata['year'] = datetime.now().year
+
+    return metadata
+
+
 class PdfProcessor:
     """
     ETL class for importing and processing research papers.
     """
-    def __init__(self, prompt_path: str = 'assessment_prompt.txt', db_path: str = 'literature.db'):
+    def __init__(self, db_path: str = 'literature.db'):
         self.conn = sqlite3.connect(db_path)
-        # cursor = self.conn.cursor()
 
         # Initialize LangChain components
         self.llm_open_ai = ChatOpenAI(
-            model="gpt-4o", # gpt-4-turbo gpt-4o-mini
+            model="gpt-4o",
             temperature=0.1,
             seed=3459746589468594
         )
         self.llm_llama = Replicate(
-            model="meta/meta-llama-3.1-405b-instruct", # model="meta/meta-llama-3.1-405b-instruct",
+            model="meta/meta-llama-3.1-405b-instruct",
             model_kwargs={
                 "top_k": 50,
                 "top_p": 1,
@@ -233,24 +367,68 @@ class PdfProcessor:
         )
 
         # Initialize the assessment class
-        self.assessment = PaperAssessment(
-            model=self.llm_open_ai,
-            prompt_path=prompt_path
-        )
+        self.assessment = VirtualTutorAssessment(model=self.llm_open_ai)
 
         # Initialize rate limiter (20 requests per minute)
         self.rate_limiter = RateLimiter(requests_per_minute=20)
 
+        # Note: We no longer create the assessment table here - it's handled by main.py
 
     def __del__(self):
         if self.conn:
             self.conn.close()
 
-
     def close(self):
         if self.conn:
             self.conn.close()
 
+    def create_paper_from_pdf(self, pdf_path: str) -> Optional[int]:
+        """Create a new paper entry from PDF metadata"""
+        logger.info(f"Attempting to create paper entry from PDF: {pdf_path}")
+
+        metadata = extract_full_metadata_from_pdf(pdf_path)
+
+        # Need at least a title to create an entry
+        if not metadata.get('title'):
+            logger.warning(f"Could not extract sufficient metadata from {pdf_path}")
+            return None
+
+        # Check if paper with same title already exists
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT id FROM papers WHERE LOWER(title) = LOWER(?)', (metadata['title'],))
+        existing = cursor.fetchone()
+        if existing:
+            logger.info(f"Paper with title '{metadata['title']}' already exists with ID {existing[0]}")
+            return existing[0]
+
+        # Insert into database
+        try:
+            cursor.execute('''
+                           INSERT INTO papers
+                           (doi, title, publication_year, authors, venue, volume, publication_type,
+                            publication_source, processed, file_path)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ''', (
+                               metadata.get('doi', ''),
+                               metadata['title'],
+                               metadata['year'],
+                               metadata['authors'],
+                               metadata['venue'],
+                               metadata.get('arxiv_id', ''),  # Store arxiv ID in volume field
+                               'preprint',
+                               'arxiv_auto_import',
+                               0,
+                               pdf_path
+                           ))
+
+            self.conn.commit()
+            paper_id = cursor.lastrowid
+            logger.info(f"Created new paper entry with ID {paper_id} for '{metadata['title']}'")
+            return paper_id
+
+        except Exception as e:
+            logger.error(f"Error creating paper entry: {e}")
+            return None
 
     def find_paper_id(self, pdf_path: str) -> Optional[int]:
         """
@@ -308,10 +486,10 @@ class PdfProcessor:
                 # Try each pattern
                 for pattern in patterns:
                     cursor.execute('''
-                        SELECT id, title
-                        FROM papers 
-                        WHERE LOWER(REPLACE(title, ':', '')) LIKE ?
-                    ''', (pattern,))
+                                   SELECT id, title
+                                   FROM papers
+                                   WHERE LOWER(REPLACE(title, ':', '')) LIKE ?
+                                   ''', (pattern,))
 
                     results = cursor.fetchall()
                     if results:
@@ -324,7 +502,6 @@ class PdfProcessor:
 
         print(f"No matching paper found for {pdf_path}")
         return None
-
 
     def process_pdf(self, pdf_path: str) -> Optional[Dict[str, Any]]:
         """Process a single PDF with rate limiting"""
@@ -343,7 +520,7 @@ class PdfProcessor:
             assessment = self.assessment.assess_paper(content)
 
             if assessment is None:
-                logger.info(f"Paper {pdf_path} was not assessed as neurosymbolic")
+                logger.info(f"Paper {pdf_path} is not about virtual tutors")
                 return None
 
             return assessment
@@ -352,38 +529,110 @@ class PdfProcessor:
             logger.error(f"Error processing {pdf_path}: {e}")
             return None
 
-
     def save_assessment(self, paper_id: int, assessment: Dict[str, Any]):
-        """Save paper assessment to database with proper dict access"""
+        """Save paper assessment to database with normalized list handling"""
         cursor = self.conn.cursor()
 
-        try:
-            cursor.execute('''
-            INSERT OR REPLACE INTO paper_assessments
-            (paper_id, is_neurosymbolic, is_development, paper_type, summary, takeaways, assessment_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                paper_id,
-                assessment['is_neurosymbolic'],
-                assessment['is_development'],
-                assessment['paper_type'],
-                assessment['summary'],
-                assessment['takeaways'],
-                datetime.now().isoformat()
-            ))
+        # Define which fields are lists and their corresponding tables
+        list_field_mappings = {
+            'architecture_components': 'assessment_architecture_components',
+            'interaction_modality': 'assessment_interaction_modalities',
+            'analytics_features': 'assessment_analytics_features',
+            'pedagogical_features': 'assessment_pedagogical_features',
+            'collaboration_types': 'assessment_collaboration_types',
+            'aspects_evaluated': 'assessment_aspects_evaluated'
+        }
 
-            self.conn.commit()
+        try:
+            # Start a transaction
+            cursor.execute("BEGIN TRANSACTION")
+
+            # Separate list fields from scalar fields
+            scalar_fields = {}
+            list_fields = {}
+
+            for field, value in assessment.items():
+                if field in list_field_mappings:
+                    # This is a list field - handle it separately even if value is None
+                    if value:
+                        # Handle list fields with values
+                        if isinstance(value, str) and ',' in value:
+                            # Already comma-separated (from _flatten_assessment)
+                            list_fields[field] = [v.strip() for v in value.split(',')]
+                        elif isinstance(value, list):
+                            list_fields[field] = value
+                        else:
+                            # Single value, treat as list
+                            list_fields[field] = [value]
+                    # If value is None or empty, we simply don't add it to list_fields
+                    # and don't add it to scalar_fields either
+                else:
+                    # Only non-list fields go to scalar_fields
+                    scalar_fields[field] = value
+
+            # Insert scalar fields into main assessment table
+            scalar_fields['assessment_date'] = datetime.now().isoformat()
+            scalar_fields['paper_id'] = paper_id
+
+            # Build SQL for scalar fields only
+            field_names = ','.join(scalar_fields.keys())
+            placeholders = ','.join(['?' for _ in scalar_fields])
+            values = list(scalar_fields.values())
+
+            cursor.execute(f'''
+                INSERT OR REPLACE INTO virtual_tutor_assessments
+                ({field_names})
+                VALUES ({placeholders})
+            ''', values)
+
+            # Insert list fields into their respective tables
+            for field, items in list_fields.items():
+                table_name = list_field_mappings[field]
+
+                # First, delete existing entries for this paper
+                cursor.execute(f"DELETE FROM {table_name} WHERE paper_id = ?", (paper_id,))
+
+                # Then insert new entries
+                if items and items != ['']:  # Skip empty lists
+                    # Determine column name based on table
+                    if 'collaboration_type' in table_name:
+                        col_name = 'collaboration_type'
+                    elif 'component' in table_name:
+                        col_name = 'component'
+                    elif 'modalit' in table_name:  # matches both modality and modalities
+                        col_name = 'modality'
+                    elif 'feature' in table_name:
+                        col_name = 'feature'
+                    elif 'aspect' in table_name:
+                        col_name = 'aspect'
+                    else:
+                        col_name = 'value'  # fallback
+
+                    for item in items:
+                        if item and item.strip():  # Skip empty strings
+                            cursor.execute(
+                                f"INSERT INTO {table_name} (paper_id, {col_name}) VALUES (?, ?)",
+                                (paper_id, item.strip())
+                            )
+
+            # Commit the transaction
+            cursor.execute("COMMIT")
             logger.info(f"Assessment saved for paper {paper_id}")
 
-        except KeyError as e:
-            logger.error(f"Missing key in assessment dict: {e}")
-            logger.error(f"Assessment dict contents: {assessment}")
         except Exception as e:
+            # Rollback on error
+            cursor.execute("ROLLBACK")
             logger.error(f"Error saving assessment: {e}")
+            raise
 
+    def process_directory(self, directory_path: str, create_missing: bool = False):
+        """
+        Process all PDFs in directory with error handling.
 
-    def process_directory(self, directory_path: str):
-        """Process all PDFs in directory with error handling"""
+        Args:
+            directory_path: Path to directory containing PDFs
+            create_missing: If True, create database entries for PDFs not found in database
+        """
         pdf_files = Path(directory_path).glob('*.pdf')
 
         for pdf_path in pdf_files:
@@ -392,11 +641,17 @@ class PdfProcessor:
             try:
                 # Find paper ID
                 paper_id = self.find_paper_id(str(pdf_path))
-                logger.info(f"Paper ID -> {paper_id}")
+
+                if not paper_id and create_missing:
+                    # Try to create entry from PDF metadata
+                    logger.info(f"Paper not found in database, attempting to create entry from PDF metadata...")
+                    paper_id = self.create_paper_from_pdf(str(pdf_path))
 
                 if not paper_id:
                     logger.warning(f"No matching paper found for {pdf_path.name}, skipping...")
                     continue
+
+                logger.info(f"Paper ID -> {paper_id}")
 
                 # Check page count
                 with open(pdf_path, 'rb') as file:
@@ -412,7 +667,8 @@ class PdfProcessor:
                     self.save_assessment(paper_id, assessment)
                     self._mark_paper_processed(paper_id, str(pdf_path))
                 else:
-                    logger.warning(f"No assessment generated for {pdf_path.name}")
+                    logger.warning(f"Paper {pdf_path.name} is not about virtual tutors")
+                    self._mark_paper_unprocessed(paper_id)
 
             except Exception as e:
                 logger.error(f"Error processing {pdf_path.name}: {e}")
@@ -425,18 +681,18 @@ class PdfProcessor:
         """Mark paper as processed in database"""
         cursor = self.conn.cursor()
         cursor.execute('''
-            UPDATE papers
-            SET file_path = ?, processed = 1
-            WHERE id = ?
-        ''', (file_path, paper_id))
+                       UPDATE papers
+                       SET file_path = ?, processed = 1
+                       WHERE id = ?
+                       ''', (file_path, paper_id))
         self.conn.commit()
 
     def _mark_paper_unprocessed(self, paper_id: int):
         """Mark paper as not processed in database"""
         cursor = self.conn.cursor()
         cursor.execute('''
-            UPDATE papers
-            SET processed = 0
-            WHERE id = ?
-        ''', (paper_id,))
+                       UPDATE papers
+                       SET processed = 0
+                       WHERE id = ?
+                       ''', (paper_id,))
         self.conn.commit()
