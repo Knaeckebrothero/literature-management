@@ -9,7 +9,18 @@ from pydantic import BaseModel
 
 
 class Phase4Processor(PhaseProcessor):
-    """Processor for Phase 4: Technical Architecture"""
+    """
+    Phase4Processor is a concrete implementation of PhaseProcessor.
+
+    This class is used to process and manage phase 4-specific operations, including
+    building phase-specific questions and generating default responses for the
+    phase. It provides functionality tailored to the requirements of phase 4,
+    such as handling learning analytics features, integration in LMS, architecture
+    components, and interaction modalities.
+
+    Attributes:
+        model: The model associated with the processor instance, used for phase-specific tasks.
+    """
 
     def __init__(self, model):
         super().__init__(model, PHASE_PROMPT_TEMPLATE)
@@ -18,7 +29,16 @@ class Phase4Processor(PhaseProcessor):
         return Phase4Technical
 
     def build_questions(self, **conditions) -> str:
-        """Build questions for Phase 4"""
+        """
+        Builds and returns a formatted string of predefined questions.
+
+        This method compiles a list of questions and combines them into a single
+        string, separated by newline characters.
+
+        Returns:
+            str: A string containing all the predefined questions, separated by
+            newline characters.
+        """
         questions = [
             "Q14. Integration in LMS",
             "Q15. Functional patterns/Architecture components (select multiple if applicable)",

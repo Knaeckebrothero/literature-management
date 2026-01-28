@@ -8,7 +8,28 @@ from pydantic import BaseModel
 
 
 class Phase6Processor(PhaseProcessor):
-    """Processor for Phase 6: Evaluation Details"""
+    """
+    Phase6Processor class is a specialized extension of PhaseProcessor.
+
+    It is designed to handle the processing and question generation for Phase 6 of some defined process. It
+    utilizes a specific model and prompt template to perform its duties. The class provides methods to retrieve
+    the corresponding model, build questions for the phase, and generate default responses.
+
+    Attributes
+    ----------
+    None
+
+    Methods
+    -------
+    get_phase_model()
+        Returns the model class associated with Phase 6.
+
+    build_questions(**conditions)
+        Constructs questions specific to Phase 6 based on given conditions.
+
+    get_default_response()
+        Returns the default response for Phase 6 with preset values.
+    """
 
     def __init__(self, model):
         super().__init__(model, PHASE_PROMPT_TEMPLATE)
@@ -17,7 +38,18 @@ class Phase6Processor(PhaseProcessor):
         return Phase6Evaluation
 
     def build_questions(self, **conditions) -> str:
-        """Build questions for Phase 6"""
+        """
+        Builds a list of survey questions based on provided conditions and returns them as a single
+        string separated by newline characters.
+
+        Parameters:
+            **conditions: Arbitrary keyword arguments used to specify conditions for including or
+            excluding certain questions. For example, 'include_evaluation_details' can determine
+            whether additional questions related to evaluation details are included. Defaults to True.
+
+        Returns:
+            str: A string of questions separated by newline characters.
+        """
         questions = [
             "Q10. Has an empirical evaluation of the tutor been conducted?"
         ]

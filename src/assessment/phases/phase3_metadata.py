@@ -8,7 +8,15 @@ from pydantic import BaseModel
 
 
 class Phase3Processor(PhaseProcessor):
-    """Processor for Phase 3: Publication Metadata"""
+    """
+    Process and manage operations specific to Phase 3.
+
+    This class extends the PhaseProcessor base class and implements behaviors
+    specific to Phase 3 operations. It utilizes a given model and the Phase 3
+    prompt template for its functionality. This class is responsible for building
+    Phase 3 questions, managing default responses, and providing the corresponding
+    Phase model.
+    """
 
     def __init__(self, model):
         super().__init__(model, PHASE_PROMPT_TEMPLATE)
@@ -17,7 +25,18 @@ class Phase3Processor(PhaseProcessor):
         return Phase3Metadata
 
     def build_questions(self, **conditions) -> str:
-        """Build questions for Phase 3"""
+        """
+        Generates a formatted string containing a list of predefined questions based on given conditions.
+
+        Parameters:
+        conditions: dict
+            A dictionary of conditions that might determine the selection or formatting
+            of the questions. This is currently unused in the method.
+
+        Returns:
+        str
+            A string where each question is formatted on a new line.
+        """
         questions = [
             "Q12. Type and extent of publication",
             "Q13. Degree of availability"

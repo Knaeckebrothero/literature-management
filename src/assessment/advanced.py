@@ -1,3 +1,11 @@
+"""
+A comprehensive model for structuring a detailed assessment of a research paper related to virtual tutors using large language models (LLMs).
+
+This class models the structure for creating a well-defined assessment of academic papers in the context
+of virtual tutoring systems in higher education. The assessment integrates aspects such as context, contribution,
+implementation, results, and implications. It aims to produce an evaluative summary that is concise yet rich
+in specific, actionable insights for advancing the research and use of LLM-based virtual tutors.
+"""
 from pydantic import BaseModel, Field
 
 
@@ -36,5 +44,3 @@ class SummaryAssessment(BaseModel):
         """,
         default="Assessment not available"
     )
-
-# class PaperAssessment(BaseModel):

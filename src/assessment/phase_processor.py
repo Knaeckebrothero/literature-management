@@ -1,12 +1,22 @@
 """
-Base class for phase processors
+This module defines the abstract base class and logic for processing different phases
+of a systematic literature review using a language model. It includes methods for
+building questions, generating prompts, and processing responses.
+
+Classes:
+- PhaseProcessor: An abstract base class for processing phases of a systematic
+  literature review, defining methods for question building, content processing,
+  and retrieving default responses.
+
+Constants:
+- PHASE_PROMPT_TEMPLATE: A string template used to construct prompts for processing
+  phase questions.
 """
 from abc import ABC, abstractmethod
 from pydantic import BaseModel
 from langchain.prompts import PromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 import logging
-from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 

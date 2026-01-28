@@ -1,5 +1,14 @@
 """
-Data models for Virtual Tutor Assessment phases
+Classes defining filtering and core characteristics for evaluating AI-based virtual tutoring systems.
+
+The module includes models for two phases:
+1. Phase1Filtering: Determines initial eligibility and focus of the paper regarding AI-based
+   virtual tutors.
+2. Phase2Core: Captures detailed characteristics of the virtual tutors described in eligible
+   papers.
+
+Each model ensures compliance with rigorous evaluation criteria for research on virtual tutoring
+systems in higher education contexts.
 """
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, List
@@ -55,6 +64,7 @@ class Phase1Filtering(BaseModel):
 
     Note: A paper describes an implementation if something was actually built (even a prototype), not just proposed."""
     )
+
 
 # Phase 2: Core System Characteristics
 class Phase2Core(BaseModel):

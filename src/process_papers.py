@@ -1,16 +1,18 @@
 """
-Script to process PDFs and assess them for inclusion in a systematic literature review.
-Uses LangChain for PDF processing and LLM-based assessment.
+Module containing utility classes and functions for working with PDFs and
+handling DOIs. This includes extracting metadata such as titles, authors,
+and DOIs from PDFs, and standardizing DOI formats.
+
+The key functionality provided includes:
+- A `RateLimiter` class for controlling API request rates.
+- Functions to standardize DOIs and extract metadata from academic PDF files.
 """
-import os
 import sqlite3
 import re
 import PyPDF2
 import time
-from typing import List, Optional, Literal, Dict, Any
-from datetime import datetime
+from typing import Optional, Dict, Any
 from pathlib import Path
-from dotenv import load_dotenv, find_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.llms import Replicate
@@ -24,12 +26,33 @@ logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
+    """
+    Implements a Rate Limiter mechanism to regulate the frequency of requests.
+
+    This class ensures that requests are made at a controlled rate by enforcing a
+    delay between consecutive requests. The delay is derived from the maximum
+    allowed requests per minute configuration.
+
+    Attributes:
+        delay: Duration in seconds to wait between consecutive requests.
+        last_request: Timestamp of the most recent request.
+    """
     def __init__(self, requests_per_minute: int = 20):
         self.delay = 60.0 / requests_per_minute
         self.last_request = 0
 
     def wait(self):
-        """Wait appropriate amount of time since last request"""
+        """
+        Waits for a certain delay before allowing the next request.
+
+        This method ensures that a specified time delay is maintained between
+        requests. If the time since the last request is less than the required
+        delay, it pauses execution for the remaining time. Otherwise, it
+        immediately updates the timestamp to allow the next request.
+
+        Raises:
+            ValueError: If the delay or the calculated sleep time is invalid.
+        """
         now = time.time()
         elapsed = now - self.last_request
         if elapsed < self.delay:
@@ -39,8 +62,21 @@ class RateLimiter:
 
 def standardize_doi(doi: str) -> Optional[str]:
     """
-    Function to standardize a DOI string to the format '10.xxxx/yyyy.zzzz'.
-    Handles various DOI formats and patterns found in academic papers.
+    Standardizes a DOI (Digital Object Identifier) string into a canonical format that
+    removes prefixes, adjusts case, and ensures the DOI adheres to specific patterns.
+
+    This function identifies and standardizes DOIs that match various formats
+    commonly used across different organizations or publications. The DOI is first
+    cleaned by removing common prefixes and then matched against a list of predefined
+    regular expression patterns. For ACM DOIs, specific standardization is applied to
+    ensure consistent formatting.
+
+    Parameters:
+        doi: str
+            The input DOI string to be standardized.
+
+    Returns:
+        Optional[str]: The standardized DOI string, or None if no valid DOI is found.
     """
     if not doi:
         return None
@@ -119,8 +155,25 @@ def standardize_doi(doi: str) -> Optional[str]:
 
 def extract_doi_from_pdf(pdf_path: str) -> Optional[str]:
     """
-    Function to extract the DOI from PDF content or metadata.
-    Now handles various DOI formats and locations in academic papers.
+    Extracts the DOI (Digital Object Identifier) from the specified PDF file.
+
+    This function searches for DOI information by first checking the metadata of the PDF,
+    and then by scanning the first few pages of the document for potential DOI patterns
+    or related phrases. If a DOI is found, it is extracted, standardized, and returned.
+    The function uses typical DOI format and common phrases like "doi", "10.1002/", etc.,
+    to identify potential DOI markers.
+
+    Errors encountered during the reading or parsing process are silently handled by
+    printing an error message, while the function returns None in such cases.
+
+    Parameters:
+        pdf_path (str): The path to the PDF file from which the DOI needs to be extracted.
+
+    Returns:
+        Optional[str]: The standardized DOI string if found; None otherwise.
+
+    Raises:
+        None
     """
     try:
         with open(pdf_path, 'rb') as file:
@@ -180,7 +233,24 @@ def extract_doi_from_pdf(pdf_path: str) -> Optional[str]:
 
 def extract_title_from_pdf(pdf_path: str) -> Optional[str]:
     """
-    Function to extract the title from PDF.
+    Extracts the title of a PDF document using metadata or the first page text.
+
+    This function attempts to extract the title from the PDF document specified by
+    `pdf_path`. The extraction process first checks the metadata of the PDF for a
+    title. If no metadata title is found, it examines the text on the first page
+    of the document, using a heuristic to identify a plausible title candidate.
+
+    Parameters:
+    pdf_path: str
+        The file path of the PDF document from which to extract the title.
+
+    Returns:
+    Optional[str]
+        The extracted title if identified, or None if a title could not be
+        determined or an error occurred.
+
+    Raises:
+    None
     """
     try:
         with open(pdf_path, 'rb') as file:
@@ -207,7 +277,29 @@ def extract_title_from_pdf(pdf_path: str) -> Optional[str]:
 
 
 def extract_authors_from_pdf(pdf_path: str) -> Optional[str]:
-    """Extract authors from PDF metadata or content"""
+    """
+    Extract authors from a PDF file.
+
+    This function attempts to fetch the authors of a document provided in PDF format. It first
+    tries to extract the authors from the PDF metadata. If the metadata does not contain
+    author information, the function attempts to identify potential author names from the
+    text present on the first page of the document. It leverages patterns such as the proximity
+    of the author list to the title or keywords like 'abstract', 'introduction', and 'keywords'
+    to determine probable author entries. The resulting author names, if any, are returned
+    as a string. If authors cannot be identified or in case of any failure, the function
+    returns None.
+
+    Attributes:
+        pdf_path (str): Path to the PDF file from which authors are to be extracted.
+
+    Errors Raised:
+        Any exceptions arising during the file reading or processing are caught and logged,
+        and the function will safely return None instead.
+
+    Returns:
+        Optional[str]: A string containing names of identified authors, or None if authors
+        cannot be determined.
+    """
     try:
         with open(pdf_path, 'rb') as file:
             pdf = PyPDF2.PdfReader(file)
@@ -246,7 +338,32 @@ def extract_authors_from_pdf(pdf_path: str) -> Optional[str]:
 
 
 def extract_year_from_pdf(pdf_path: str) -> Optional[int]:
-    """Extract publication year from PDF metadata or content"""
+    """
+    Extracts the publication year from a PDF file.
+
+    This function attempts to determine the publication year of the given PDF file by:
+    - Checking the PDF metadata for a creation date.
+    - Searching for specific patterns such as arXiv identifiers, copyright years,
+      or other common year patterns within the text of the first few pages.
+
+    If multiple year candidates are found in the text, the function returns the
+    most recent valid year. The valid year range is restricted to 1990 through the
+    next calendar year from the current system date.
+
+    Attributes:
+        logger: Logging instance used for error reporting.
+
+    Parameters:
+        pdf_path: str
+            The file path of the PDF to analyze.
+
+    Returns:
+        Optional[int]: Detected publication year, or None if no valid year is found.
+
+    Raises:
+        Any exceptions encountered during file processing or text extraction
+        are logged, and the function returns None.
+    """
     try:
         with open(pdf_path, 'rb') as file:
             pdf = PyPDF2.PdfReader(file)
@@ -299,7 +416,40 @@ def extract_year_from_pdf(pdf_path: str) -> Optional[int]:
 
 
 def extract_full_metadata_from_pdf(pdf_path: str) -> Dict[str, Any]:
-    """Extract comprehensive metadata from PDF"""
+    """
+    Extracts comprehensive metadata from a specified PDF file, including attributes
+    such as DOI, title, authors, year, and venue. The extraction process attempts to
+    determine these attributes using a combination of auxiliary helper functions and
+    direct parsing of the PDF file's content.
+
+    Attributes like DOI, title, authors, and year are determined using specialized
+    helper functions, while the venue is defaulted to 'arXiv'. The function also
+    searches for an arXiv ID within the first few pages of the PDF, and attempts to
+    derive the year from the arXiv ID if other methods for year extraction fail.
+
+    Extensive fallbacks are implemented in case specific metadata elements cannot
+    be extracted, ensuring that the function provides a complete metadata dictionary
+    even when specific sources are unavailable or malformed.
+
+    Parameters:
+        pdf_path: str
+            The path to the PDF file from which metadata is to be extracted.
+
+    Returns:
+        Dict[str, Any]
+            A dictionary containing extracted metadata. It includes the following
+            entries:
+            - 'doi': DOI of the document, if available, otherwise None.
+            - 'title': Title of the document, extracted or derived from filename.
+            - 'authors': Authors of the document, extracted or defaulted to
+              'Unknown Authors'.
+            - 'year': Year of publication, extracted or defaulted to the current year.
+            - 'venue': "arXiv".
+            - 'arxiv_id': arXiv ID extracted from the document, if found, otherwise None.
+
+    Raises:
+        None
+    """
     metadata = {
         'doi': extract_doi_from_pdf(pdf_path),
         'title': extract_title_from_pdf(pdf_path),
@@ -344,7 +494,35 @@ def extract_full_metadata_from_pdf(pdf_path: str) -> Dict[str, Any]:
 
 class PdfProcessor:
     """
-    ETL class for importing and processing research papers.
+    Class responsible for processing PDF files, extracting metadata, and interacting with a database
+    for papers and assessments.
+
+    The PdfProcessor class is designed to streamline the handling of PDF files in the context of
+    academic papers. It manages database connections, processes PDF files to extract metadata,
+    checks for the existence of papers in the database, and facilitates the assessment of papers
+    using specific models. Additionally, the class includes mechanisms for rate-limiting requests
+    and ensures normalized handling of list-based assessment fields.
+
+    Attributes:
+        conn: Database connection object for storing and retrieving paper information.
+        llm_open_ai: Instance of a ChatOpenAI model for processing tasks.
+        llm_llama: Instance of a Replicate-based model for advanced processing.
+        assessment: Instance of VirtualTutorAssessment for assessing the content of PDFs.
+        rate_limiter: A rate limiter to control the number of requests sent per minute.
+
+    Methods:
+        __del__:
+            Closes the database connection when the object is deleted.
+        close:
+            Closes the database connection explicitly.
+        create_paper_from_pdf:
+            Extracts metadata from the PDF and creates a new paper database entry.
+        find_paper_id:
+            Identifies if a paper from a given PDF exists in the database based on DOI or title.
+        process_pdf:
+            Processes the content of a single PDF and rates it for assessment while respecting rate limits.
+        save_assessment:
+            Stores the assessment results for a paper in the database while managing normalized list fields.
     """
     def __init__(self, db_path: str = 'literature.db'):
         self.conn = sqlite3.connect(db_path)
@@ -372,8 +550,6 @@ class PdfProcessor:
         # Initialize rate limiter (20 requests per minute)
         self.rate_limiter = RateLimiter(requests_per_minute=20)
 
-        # Note: We no longer create the assessment table here - it's handled by main.py
-
     def __del__(self):
         if self.conn:
             self.conn.close()
@@ -383,7 +559,25 @@ class PdfProcessor:
             self.conn.close()
 
     def create_paper_from_pdf(self, pdf_path: str) -> Optional[int]:
-        """Create a new paper entry from PDF metadata"""
+        """
+        Creates a new paper entry in the database from a given PDF file.
+
+        This method attempts to extract metadata from a PDF file and use it to create a new
+        entry in the papers database. It also prevents duplicate entries by checking
+        if a paper with the same title already exists. If a sufficient metadata payload
+        is not found or an error occurs during the insertion process, the method handles
+        it appropriately and logs relevant information.
+
+        Parameters:
+        pdf_path: str
+            The file path of the PDF from which metadata will be extracted.
+
+        Returns:
+        Optional[int]
+            The ID of the newly created paper entry if successful, the ID
+            of an existing paper entry if a duplicate is detected, or None
+            if the operation fails.
+        """
         logger.info(f"Attempting to create paper entry from PDF: {pdf_path}")
 
         metadata = extract_full_metadata_from_pdf(pdf_path)
@@ -432,8 +626,22 @@ class PdfProcessor:
 
     def find_paper_id(self, pdf_path: str) -> Optional[int]:
         """
-        Function to find the paper ID from the database using DOI or title fallback.
-        Returns the integer ID from the papers table.
+        Attempts to find the ID of a paper in the database by analyzing the given PDF.
+
+        It first tries to extract and match the DOI (Document Object Identifier) from the PDF against the database.
+        If no match is found via DOI, it attempts to extract the title from the PDF and matches it to the titles in the database.
+        The matching process for the title involves cleaning the title string and employing a pattern-matching technique for flexibility.
+
+        Parameters:
+            pdf_path: str
+                The file path of the PDF from which the paper ID needs to be determined.
+
+        Returns:
+            Optional[int]
+                The ID of the paper if found in the database, otherwise None.
+
+        Raises:
+            Any database-related errors or exceptions raised by internal operations are not handled directly in this function.
         """
         cursor = self.conn.cursor()
 
@@ -504,7 +712,17 @@ class PdfProcessor:
         return None
 
     def process_pdf(self, pdf_path: str) -> Optional[Dict[str, Any]]:
-        """Process a single PDF with rate limiting"""
+        """
+        Processes a PDF file, extracts its content, and assesses it for relevancy to virtual tutors. If the
+        paper does not match the assessment criteria, it is considered irrelevant and ignored.
+
+        Args:
+            pdf_path (str): The path to the PDF file to be processed.
+
+        Returns:
+            Optional[Dict[str, Any]]: A dictionary containing the assessment results if the paper
+            is relevant, or None if the paper is irrelevant or an error occurs during processing.
+        """
         try:
             # Load PDF
             loader = PyPDFLoader(pdf_path)
@@ -530,7 +748,41 @@ class PdfProcessor:
             return None
 
     def save_assessment(self, paper_id: int, assessment: Dict[str, Any]):
-        """Save paper assessment to database with normalized list handling"""
+        """
+        Saves assessment data into the database by inserting scalar fields into the main assessment table
+        and list fields into their respective sub-tables. Handles transactions to ensure data consistency
+        and utilizes parameterized SQL queries for security and flexibility.
+
+        Attributes
+        ----------
+        conn : sqlite3.Connection
+            Database connection object used to execute SQL queries.
+
+        Parameters
+        ----------
+        paper_id : int
+            The unique identifier of the paper associated with this assessment.
+        assessment : Dict[str, Any]
+            A dictionary containing assessment data, where keys correspond to database fields and
+            values are either scalar types or lists. List fields are stored in specific sub-tables,
+            while scalar fields are stored in the main assessment table.
+
+        Raises
+        ------
+        Exception
+            If an error occurs during the database operations, the transaction is rolled back and
+            the error is logged before being raised.
+
+        Notes
+        -----
+        - List fields are stored in separate sub-tables. Any existing entries for the specified paper ID
+          in these sub-tables are deleted before inserting new data.
+        - Handles both scalar values and lists for the list fields. Individual strings with commas are
+          split into lists.
+        - The `assessment_date` field is automatically added with the current ISO 8601 datetime.
+        - Type consistency is enforced for list fields, ensuring values are appropriately handled.
+        - All operations are wrapped in a single transaction for atomicity.
+        """
         cursor = self.conn.cursor()
 
         # Define which fields are lists and their corresponding tables
@@ -627,11 +879,20 @@ class PdfProcessor:
 
     def process_directory(self, directory_path: str, create_missing: bool = False):
         """
-        Process all PDFs in directory with error handling.
+        Processes all PDF files in the given directory, attempts to find or create paper entries,
+        and processes each paper to extract an assessment. Provides comprehensive logging information
+        about successes, failures, and skipped files due to specific conditions.
 
-        Args:
-            directory_path: Path to directory containing PDFs
-            create_missing: If True, create database entries for PDFs not found in database
+        Parameters:
+        directory_path: str
+            The path to the directory containing PDF files for processing.
+        create_missing: bool, optional
+            If set to True, attempts to create a new database entry for a paper using PDF metadata
+            if no matching paper exists (default is False).
+
+        Raises:
+        Exception
+            If an error occurs while processing a PDF, logs the error and skips the file.
         """
         pdf_files = Path(directory_path).glob('*.pdf')
 
@@ -678,7 +939,20 @@ class PdfProcessor:
         self.conn.commit()
 
     def _mark_paper_processed(self, paper_id: int, file_path: str):
-        """Mark paper as processed in database"""
+        """
+        Marks a paper as processed by updating its file path and setting its processed
+        status to true in the database.
+
+        Parameters:
+        paper_id : int
+            The unique identifier of the paper to be updated.
+        file_path : str
+            The file path of the processed paper.
+
+        Raises:
+        Exception
+            If there is an issue with database interaction.
+        """
         cursor = self.conn.cursor()
         cursor.execute('''
                        UPDATE papers
@@ -688,7 +962,15 @@ class PdfProcessor:
         self.conn.commit()
 
     def _mark_paper_unprocessed(self, paper_id: int):
-        """Mark paper as not processed in database"""
+        """
+        Marks a paper as unprocessed in the database.
+
+        This method updates the 'processed' status of a specific paper in the papers
+        table identified by its ID, setting the processed flag to 0.
+
+        Args:
+            paper_id (int): The ID of the paper to be marked as unprocessed.
+        """
         cursor = self.conn.cursor()
         cursor.execute('''
                        UPDATE papers

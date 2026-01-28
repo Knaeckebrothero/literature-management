@@ -28,7 +28,19 @@ logger = logging.getLogger(__name__)
 
 @st.cache_resource
 def get_connection():
-    """Get database connection, creating tables if they don't exist"""
+    """
+    Caches and retrieves an SQLite database connection. Ensures the database
+    is correctly initialized if it is accessed for the first time by verifying
+    the existence of required tables.
+
+    Raises:
+        sqlite3.Error: If there is an issue connecting to or querying the
+            SQLite database.
+
+    Returns:
+        sqlite3.Connection: The SQLite connection object for interacting
+        with the 'literature.db' database.
+    """
     conn = sqlite3.connect('literature.db', check_same_thread=False)
 
     # Check if tables exist
@@ -42,7 +54,23 @@ def get_connection():
 
 
 def setup_database_with_connection(conn, schema_path='src/schema.sql'):
-    """Setup database using schema.sql file with existing connection"""
+    """
+    Initializes a database using the provided connection and schema file.
+
+    This function checks for the existence of a schema file, reads its contents, and
+    executes the SQL commands within it to set up the database schema. If the schema
+    file does not exist or an error occurs during execution, the process will log
+    the error and raise an appropriate exception.
+
+    Args:
+        conn (sqlite3.Connection): A SQLite database connection object.
+        schema_path (str): The file path of the SQL schema file. Defaults to 'src/schema.sql'.
+
+    Raises:
+        FileNotFoundError: If the schema file does not exist at the provided path.
+        sqlite3.Error: If there are errors related to database operations.
+        Exception: If an unexpected error occurs during database setup.
+    """
     cursor = conn.cursor()
 
     try:
@@ -77,7 +105,40 @@ def setup_database_with_connection(conn, schema_path='src/schema.sql'):
 
 
 def load_data_with_lists(base_query=None):
-    """Load data including normalized list fields"""
+    """
+    Loads data using a provided query or a default query, retrieves additional list
+    attributes from auxiliary tables using SQL queries, and merges this information
+    with the main data. Columns representing boolean values are converted into
+    Python boolean types for consistency. The method handles cases where certain
+    tables may not exist in the database and will proceed without merging those
+    tables.
+
+    Parameters:
+    base_query: Optional[str]
+        A custom SQL query to fetch the main data. If not provided, a default
+        query will be used.
+
+    Returns:
+    pandas.DataFrame
+        A DataFrame containing the main data along with additional list attributes
+        if available. Boolean columns are converted to Python boolean values for
+        standardization.
+
+    Raises:
+    sqlite3.OperationalError
+        If there are issues querying the database, except when specific tables do
+        not exist in the database, which are handled gracefully.
+
+    Notes:
+    - Default query is used if `base_query` is not supplied.
+    - Auxiliary tables are queried to compute list attributes such as `architecture_components`,
+      `interaction_modality`, `analytics_features`, `pedagogical_features`,
+      `collaboration_types`, and `aspects_evaluated`.
+    - Sets of list attributes are joined to the main data set based on the
+      `id` column in the main data and `paper_id` in the auxiliary data.
+    - Handles cases where certain auxiliary tables are missing by skipping those
+      joins.
+    """
     try:
         conn = get_connection()
 
@@ -157,7 +218,17 @@ def load_data_with_lists(base_query=None):
 
 
 def get_all_papers_query():
-    """Return the standard query for loading all papers with their assessment status"""
+    """
+    Generate a SQL query to retrieve all papers and their associated assessment details.
+
+    This function constructs and returns the SQL query used to fetch records from the `papers`
+    table and its associated data from the `virtual_tutor_assessments` table. The query includes
+    fields from both tables, along with a computed column `assessment_status` that categorizes
+    the paper based on its assessment details.
+
+    Returns:
+        str: SQL query string to fetch papers and their assessment information.
+    """
     return """
            SELECT
                p.*,
@@ -195,7 +266,20 @@ def get_all_papers_query():
 
 
 def load_data(query):
-    """Load data from the database, ensuring we get ALL papers including unassessed ones."""
+    """
+    Loads data from a database into a Pandas DataFrame based on the provided SQL query.
+
+    If no query is provided, a default query is used to fetch all papers.
+    Converts specific integer boolean columns from the SQLite database to Python
+    boolean format, while properly handling NULL values.
+
+    Args:
+        query (Optional[str]): SQL query to fetch data. If None, a default query will be used.
+
+    Returns:
+        DataFrame: The resulting data fetched from the database, with boolean columns
+        properly converted.
+    """
     conn = get_connection()
 
     # Use the standard query if none provided
@@ -214,8 +298,13 @@ def load_data(query):
 
 def setup_database(db_path: str = 'literature.db'):
     """
-    Function to create the SQLite database, set up the connection
-    and create citation and assessment tables if needed.
+    Sets up the database by connecting to the given SQLite database file path and
+    verifying its schema for compatibility. Ensures that the database schema supports
+    arXiv papers without DOIs. If incompatible, the user is prompted with a warning
+    and guidance on updating the schema.
+
+    Parameters:
+    db_path (str): The path to the SQLite database file. Defaults to 'literature.db'.
     """
     conn = sqlite3.connect(db_path)
 
@@ -238,6 +327,14 @@ def setup_database(db_path: str = 'literature.db'):
 
 
 def import_citations():
+    """
+    Imports and processes citation files from different sources based on a pre-configured file
+    list. The function identifies existing files within specified directories and processes
+    them using a citation processor.
+
+    Raises:
+        FileNotFoundError: If one or more configured files do not exist.
+    """
     # Configure base path for search results
     search_dir = Path('search_results')
 
@@ -262,6 +359,17 @@ def import_citations():
 
 
 def process_papers():
+    """
+    Processes a directory containing PDF papers using a PdfProcessor instance.
+
+    Processes all PDF files located in the 'papers' directory. Ensures that the
+    resources and connections used by PdfProcessor are properly closed after the
+    processing is complete.
+
+    Raises:
+        Any exception encountered during the PDF processing will propagate
+        to the caller.
+    """
     processor = PdfProcessor()
     try:
         processor.process_directory('papers')
@@ -270,7 +378,20 @@ def process_papers():
 
 
 def import_arxiv_papers(directory_path: str):
-    """Import arXiv papers from a directory"""
+    """
+    Processes all PDF files in the given directory, extracting relevant information
+    from them and handling them appropriately. This function leverages the PdfProcessor
+    to traverse the provided directory, optionally creating missing directories or
+    handling issues as necessary.
+
+    Args:
+        directory_path (str): The path to the directory containing the PDF files
+        to be processed.
+
+    Raises:
+        Any exception raised by the PdfProcessor during processing will be propagated if
+        unhandled in the processing flow.
+    """
     processor = PdfProcessor()
     try:
         processor.process_directory(directory_path, create_missing=True)
@@ -279,6 +400,18 @@ def import_arxiv_papers(directory_path: str):
 
 
 class NumpyEncoder(json.JSONEncoder):
+    """
+    Encoder class for converting NumPy types into JSON serializable objects.
+
+    This class extends `json.JSONEncoder` to handle the serialization of
+    NumPy data types such as `np.integer`, `np.floating`, and `np.ndarray`,
+    which are not natively serializable by the standard JSON encoder.
+
+    It is useful when working with data containing NumPy objects that need
+    to be serialized into JSON format. The class ensures that NumPy scalars
+    are converted to their Python counterparts, and NumPy arrays are converted
+    to Python lists before encoding.
+    """
     def default(self, obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -290,7 +423,27 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 def display_papers_tab(papers_df):
-    """Display the papers tab with basic statistics and visualizations."""
+    """
+    Displays a tab with visualizations and statistics about papers dataset.
+
+    This function is designed to present relevant metrics and graphical
+    representations for a given DataFrame of papers. It includes sections
+    for basic statistics, publications per year, top venues, distribution
+    by publication sources, and a searchable interactive table for further
+    exploration of the papers' details. If the dataset is empty, a warning
+    message is displayed.
+
+    Parameters:
+        papers_df (DataFrame): A pandas DataFrame containing papers data with
+            relevant fields such as title, authors, publication_year, venue,
+            publication_type, publication_source, doi, and volume.
+
+    Raises:
+        ValueError: If the required fields are missing from the DataFrame.
+
+    Returns:
+        None
+    """
     st.title("Papers")
 
     if papers_df.empty:
@@ -385,6 +538,22 @@ def display_papers_tab(papers_df):
 
 
 def add_paper():
+    """
+    Handles the functionality for adding a research paper through a form interface.
+    This function renders a form with fields for paper details like DOI, title, publication
+    year, authors, venue, volume, publication type, and publication source. Upon form
+    submission, it validates the required fields and inserts the data into a database.
+
+    Raises:
+        sqlite3.IntegrityError: If a paper with the given DOI already exists in the database.
+        Exception: If there is any error during the database operation.
+
+    Parameters:
+        None
+
+    Returns:
+        None
+    """
     st.title("Add Paper")
 
     # Form for paper details
@@ -438,7 +607,27 @@ def add_paper():
 
 
 def apply_filters(df, filters):
-    """Apply filters to a dataframe"""
+    """
+    Filters the given dataset according to specified criteria and returns the modified dataset.
+
+    Parameters:
+    df : DataFrame
+        The dataset to be filtered in pandas DataFrame format.
+    filters : dict
+        A dictionary of filtering criteria with the following possible keys:
+            - 'years': List specifying publication years to include.
+            - 'llm_model': A string specifying the LLM model filter. Use "All" for no filter.
+            - 'focus': A string specifying focus filter. Possible values: "All", "Virtual Tutor", "Implementation", or "Unassessed/Other".
+            - 'evaluation': A string specifying evaluation filter. Possible values: "All", "Evaluated", or "Not Evaluated".
+
+    Returns:
+    DataFrame
+        The filtered dataset that meets the specified filter criteria.
+
+    Raises:
+    KeyError
+        If any of the expected keys in the 'filters' dictionary are absent or incorrectly spelled.
+    """
     filtered_df = df.copy()
 
     # Debug info before filtering
@@ -489,7 +678,25 @@ def apply_filters(df, filters):
 
 
 def create_filters(papers_df):
-    """Create filter widgets that can be used across tabs"""
+    """
+    Creates and returns a set of user-selected filters for a dataset of research papers.
+
+    This function provides a user interface using the Streamlit sidebar to create filters
+    based on specific attributes of the input dataset. The resulting filters are then
+    returned in a dictionary for further processing.
+
+    Parameters:
+        papers_df (DataFrame): A pandas DataFrame containing research paper data.
+            The DataFrame is expected to have at least the columns: 'publication_year',
+            'llm_model'.
+
+    Returns:
+        dict: A dictionary where each key represents a filter category (e.g., years,
+            llm_model, focus, evaluation) and the value is the corresponding user-selected
+            filter option(s).
+
+    Raises:
+    """
     filters = {}
 
     with st.sidebar:
@@ -533,7 +740,22 @@ def create_filters(papers_df):
 
 
 def display_assessments_tab(papers_df, filters):
-    """Display the assessments tab with visualizations"""
+    """
+    Displays the Virtual Tutor Assessments tab with summary statistics, applied filters,
+    and graphical insights based on the provided data.
+
+    Parameters:
+        papers_df (DataFrame): The dataframe containing information about papers.
+        filters (dict): A dictionary containing filter conditions to apply on the dataframe.
+
+    Raises:
+        KeyError: If the expected column names such as 'is_virtual_tutor',
+                  'is_implementation', 'llm_model', 'primary_function', or
+                  'empirical_evaluation' are missing in the dataframe.
+
+    Returns:
+        None
+    """
     st.title("Virtual Tutor Assessments")
 
     filtered_df = apply_filters(papers_df, filters)
@@ -619,7 +841,22 @@ def display_assessments_tab(papers_df, filters):
 
 @st.cache_data
 def load_keyword_data():
-    """Load keyword data with relationships and paper metadata"""
+    """
+    Caches and loads keyword data by executing a SQL query.
+
+    This function establishes a connection to the database, executes the SQL query
+    to fetch information related to keywords, papers, and their relationships, and
+    returns the data as a Pandas DataFrame. It utilizes `st.cache_data` for caching
+    to avoid redundant database calls and improve performance.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing keyword, paper, and virtual tutor
+                      assessment data.
+
+    Raises:
+        Any potential exceptions raised during the database connection or query
+        execution process.
+    """
     conn = get_connection()
     query = """
             SELECT
@@ -641,7 +878,27 @@ def load_keyword_data():
 
 @st.cache_data
 def process_keyword_network(df, max_nodes=30):
-    """Process keyword data for network visualization with size limits"""
+    """
+    Processes a keyword network from a given DataFrame, limiting the size of the network
+    by the top keywords and generating a co-occurrence matrix of keywords.
+
+    Parameters:
+    df: DataFrame
+        The input DataFrame containing at least a 'keyword' column and a 'paper_id' column.
+    max_nodes: int, optional
+        The maximum number of top keywords to include in the network. Default is 30.
+
+    Returns:
+    DataFrame
+        A DataFrame representing the co-occurrence matrix with columns 'source', 'target',
+        and 'weight', where 'source' and 'target' are keywords, and 'weight' is the
+        frequency of their co-occurrence.
+
+    Raises:
+    KeyError
+        If the required columns 'keyword' or 'paper_id' are missing in the input DataFrame.
+
+    """
     # Get top keywords first to limit network size
     top_keywords = df['keyword'].value_counts().head(max_nodes).index
     df_filtered = df[df['keyword'].isin(top_keywords)]
@@ -668,7 +925,21 @@ def process_keyword_network(df, max_nodes=30):
 
 @st.cache_data
 def process_temporal_evolution(df, top_n=10):
-    """Process keyword data for temporal evolution"""
+    """
+    Processes the temporal evolution of keywords in a DataFrame by filtering for the
+    top N keywords and grouping data by publication year and keyword to compute the
+    counts.
+
+    Args:
+        df: A pandas DataFrame containing at least 'keyword' and 'publication_year' columns.
+        top_n: An integer indicating the number of top keywords to consider based on
+               their frequency in the DataFrame. Default is 10.
+
+    Returns:
+        A pandas DataFrame with columns ['publication_year', 'keyword', 'count'],
+        where 'count' represents the occurrence of each keyword per year in the
+        input DataFrame.
+    """
     top_keywords = df['keyword'].value_counts().head(top_n).index
     mask = df['keyword'].isin(top_keywords)
     return df[mask].groupby(['publication_year', 'keyword']).size().reset_index(name='count')
@@ -676,12 +947,43 @@ def process_temporal_evolution(df, top_n=10):
 
 @st.cache_data
 def process_keyword_frequency(df, top_n=20):
-    """Process keyword frequency data"""
+    """
+    Caches and processes keyword frequencies from a DataFrame by calculating
+    the top N most frequent keywords. The function returns a new DataFrame
+    containing the keywords and their respective frequencies.
+
+    Parameters:
+        df (pd.DataFrame): The input DataFrame containing a column named 'keyword'.
+        top_n (int): Optional. Number of top keywords to extract. Defaults to 20.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing the 'top_n' keywords and their
+        corresponding frequency counts. The first column holds the keywords,
+        and the second column contains their frequencies.
+    """
     return df['keyword'].value_counts().head(top_n).reset_index()
 
 
 def display_keywords_tab(papers_df, filters):
-    """Display the keywords analysis tab"""
+    """
+    Displays a tab for analyzing and visualizing keyword data from a collection of academic papers.
+
+    This function provides functionalities to filter and visualize keyword data in three parts:
+    a keyword co-occurrence network, keyword frequency analysis, and temporal evolution of keywords.
+    Additionally, it includes options to adjust visualization parameters and export the processed
+    data for further use.
+
+    Parameters:
+        papers_df (DataFrame): DataFrame containing metadata of the papers.
+        filters (dict): A dictionary of filters to apply to the papers dataset.
+
+    Raises:
+        Warning: If no keyword data is available for the current selection, or if there is insufficient
+                 data to create the visualizations.
+
+    Returns:
+        None
+    """
     st.title("Keyword Analysis")
 
     with st.spinner("Loading keyword data..."):
@@ -846,7 +1148,24 @@ def display_keywords_tab(papers_df, filters):
 
 
 def display_analysis_tab(papers_df, filters):
-    """Display comprehensive analysis tab with multiple visualization sub-tabs"""
+    """
+    Displays the comprehensive analysis dashboard for the provided dataset,
+    allowing users to explore various analytical perspectives using the available
+    sub-tabs. The function applies specified filters to the data and performs
+    analysis only on assessed papers. Each sub-tab provides a focused representation
+    on a specific aspect of the dataset, ranging from technology insights to
+    implementation contexts.
+
+    Parameters:
+        papers_df (pandas.DataFrame): The dataframe containing data related to
+            papers and their details.
+        filters (dict): A dictionary containing filter criteria to apply to
+            the papers dataframe.
+
+    Raises:
+        Warning: Displays a warning message to the user when no assessed papers
+            are found in the filtered dataset.
+    """
     st.title("📊 Comprehensive Analysis Dashboard")
 
     # Apply filters
@@ -910,7 +1229,26 @@ def display_analysis_tab(papers_df, filters):
 
 
 def display_assessment_overview(all_df, assessed_df, vt_df):
-    """Display overview metrics and timeline"""
+    """
+    Generates an interactive dashboard for visualizing the assessment overview of research papers.
+
+    Summary:
+        The function creates a dashboard using Streamlit to display key metrics, visualizations,
+        and insights about the assessment process of research papers. It includes metrics related
+        to total papers, assessed papers, virtual tutors, and implementations. Additionally,
+        it presents distributions and trends over time for assessment statuses and publication years.
+
+    Args:
+        all_df (pandas.DataFrame): The DataFrame containing all research papers' data.
+        assessed_df (pandas.DataFrame): The DataFrame containing data of the assessed papers.
+        vt_df (pandas.DataFrame): The DataFrame containing data of virtual tutor papers.
+
+    Raises:
+        None
+
+    Returns:
+        None
+    """
     st.header("Assessment Overview Dashboard")
 
     # Key metrics
@@ -965,7 +1303,30 @@ def display_assessment_overview(all_df, assessed_df, vt_df):
 
 
 def display_llm_technology_analysis(vt_df):
-    """Display LLM technology landscape analysis"""
+    """
+    Analyzes and visualizes data related to large language model (LLM) technology in virtual tutor papers.
+
+    The function provides various visualizations to inspect multiple aspects of the dataset, including:
+    1. A hierarchical sunburst chart to represent the relationship between LLM models, their primary
+       functions, and their subject domains.
+    2. A heatmap to display the deployment status of different LLM models.
+    3. A timeline chart showing the evolution of LLM adoption by year.
+    4. RAG (Retrieval-Augmented Generation) adoption analysis, both at a general level and specifically
+       by LLM model.
+
+    Parameters:
+        vt_df (DataFrame): A pandas DataFrame containing data on virtual tutor papers. It should ideally
+                           include the following columns for complete analysis:
+                           - 'llm_model': Represents the specific LLM used.
+                           - 'primary_function': Describes the primary function of the LLM.
+                           - 'subject_domain': Indicates the subject domain covered by the LLM.
+                           - 'deployment_status': Specifies the deployment status for each LLM.
+                           - 'publication_year': Tracks the year of publication associated with the LLM.
+                           - 'uses_rag': Indicates whether the LLM uses Retrieval-Augmented Generation (RAG).
+
+    Raises:
+        None
+    """
     st.header("🤖 LLM Technology Analysis")
 
     if vt_df.empty:
@@ -1060,7 +1421,23 @@ def display_llm_technology_analysis(vt_df):
 
 
 def display_architecture_analysis(vt_df):
-    """Display technical architecture patterns analysis"""
+    """
+    Analyzes and visualizes insights related to technical architecture, LMS integration, interaction
+    modalities, and analytics features from a given DataFrame.
+
+    Summary:
+    The function generates interactive visualizations using Streamlit and Plotly to provide an analysis
+    of the technical architecture, LMS integration patterns, interaction modalities, and learning
+    analytics features. It processes and displays data in various formats, such as bar charts and pie
+    charts, to enable better understanding of the data distribution.
+
+    Args:
+        vt_df (pd.DataFrame): A Pandas DataFrame containing columns such as 'lms_integration',
+        'architecture_components', 'interaction_modality', and 'analytics_features'.
+
+    Raises:
+        KeyError: If the expected columns do not exist in the given DataFrame.
+    """
     st.header("🏗️ Technical Architecture Analysis")
 
     # LMS Integration distribution
@@ -1121,7 +1498,29 @@ def display_architecture_analysis(vt_df):
 
 
 def display_pedagogical_analysis(vt_df):
-    """Display pedagogical features analysis"""
+    """
+    Analyzes and visualizes pedagogical features, personalization, and collaboration data from a dataframe.
+
+    This function generates various visualizations including heatmaps for pedagogical features implementation,
+    bar and pie charts for feature frequency, personalization approaches, collaboration support, and types of
+    collaboration supported. The analysis is dependent on specific columns being present in the input dataframe.
+
+    Parameters:
+    vt_df : pandas.DataFrame
+        DataFrame containing columns related to pedagogical features, personalization, collaboration support,
+        and collaboration types for analysis.
+
+    Raises:
+    ValueError
+        If the input DataFrame does not contain required columns for the analysis.
+
+    Notes:
+    - Expects columns like 'pedagogical_features', 'title', 'personalization', 'supports_collaboration',
+      and 'collaboration_types' to be present in the DataFrame, if the analysis of corresponding data is desired.
+    - Displays heatmap and bar chart for pedagogical features only if the feature_data matrix includes a manageable
+      number of papers (<=20).
+    - Generates visualizations using Plotly and displays them via Streamlit components.
+    """
     st.header("📚 Pedagogical Features Analysis")
 
     # Pedagogical features heatmap
@@ -1199,7 +1598,22 @@ def display_pedagogical_analysis(vt_df):
 
 
 def display_evaluation_insights(vt_df):
-    """Display evaluation and empirical evidence analysis"""
+    """
+    Displays evaluation insights using interactive visualizations. The function provides an overview of
+    empirical evaluation distribution, sample size statistics, and key evaluation characteristics
+    while analyzing aspects evaluated in studies. Visualizations include pie charts, bar plots, bubble
+    charts, and horizontal bar charts to illustrate the distributions and relationships within the
+    evaluation data.
+
+    Parameters:
+    vt_df (pd.DataFrame): A pandas DataFrame containing evaluation data. The DataFrame must include
+                          columns such as 'empirical_evaluation', 'sample_size', 'evaluation_duration',
+                          and 'aspects_evaluated', depending on the type of analysis to be performed.
+
+    Raises:
+    TypeError: If the `vt_df` parameter is not a pandas DataFrame.
+    ValueError: If required columns for the visualizations are missing in the input DataFrame.
+    """
     st.header("📊 Evaluation Insights")
 
     # Evaluation overview
@@ -1265,7 +1679,22 @@ def display_evaluation_insights(vt_df):
 
 
 def display_implementation_context(vt_df):
-    """Display implementation context analysis"""
+    """
+    Displays information on the implementation context of the provided data, focusing on institution
+    types, development approaches, language support, and publication venue regions. Generates graphical
+    representations for better comprehension of the implementation-related data.
+
+    Args:
+        vt_df (DataFrame): Input DataFrame containing data related to research papers which includes
+            columns like 'is_implementation', 'institution_type', 'development_approach',
+            'language_support', and 'venue'.
+
+    Raises:
+        None
+
+    Returns:
+        None
+    """
     st.header("🏛️ Implementation Context")
 
     impl_df = vt_df[vt_df['is_implementation'] == True].copy()
@@ -1311,6 +1740,21 @@ def display_implementation_context(vt_df):
     }
 
     def classify_region(venue):
+        """
+        Classifies a venue into predefined regions based on matching keywords.
+
+        The function processes a venue string to determine its corresponding region
+        by comparing it against a dictionary of region keywords. If the venue is not
+        specified (NaN), it classifies the venue as 'Unknown'. If the venue does not
+        match any keywords for the predefined regions, it returns 'Other'.
+
+        Parameters:
+            venue (str): The name of the venue to classify.
+
+        Returns:
+            str: The classified region in uppercase ('UNKNOWN' for NaN venues,
+            'OTHER' for no matches, or a specific region name).
+        """
         if pd.isna(venue):
             return 'Unknown'
         venue_lower = venue.lower()
@@ -1328,7 +1772,21 @@ def display_implementation_context(vt_df):
 
 
 def display_privacy_compliance(vt_df):
-    """Display privacy and compliance analysis"""
+    """
+    Displays analysis related to privacy and compliance based on provided data. The function
+    uses the data to generate and render visualizations for privacy protection measures, cost/resource
+    requirements, privacy protection mentions over time, and reference architecture adoption.
+
+    Parameters:
+    vt_df : pd.DataFrame
+        A pandas DataFrame containing columns required for privacy and compliance analysis.
+        The relevant columns include 'privacy_protection', 'cost_requirements', 'publication_year',
+        and 'reference_architecture'. The presence of these columns impacts the visualizations generated.
+
+    Raises:
+    st.errors.UsageError
+        If the function is used without a Streamlit server running in the environment.
+    """
     st.header("🔒 Privacy & Compliance Analysis")
 
     # Privacy protection overview
@@ -1367,7 +1825,29 @@ def display_privacy_compliance(vt_df):
 
 
 def display_comparative_analysis(vt_df):
-    """Display comparative analysis tools"""
+    """
+    Displays a comparative analysis of virtual tutor (VT) features.
+
+    This function provides insights into VT feature comparisons by allowing users
+    to select specific papers for comparison and analyze co-occurring features.
+    It includes two main sections: a feature comparison matrix and a feature
+    co-occurrence analysis. The feature comparison matrix enables the selection of
+    a maximum of five papers from the input dataset and presents their key
+    features side-by-side for comparison. Users can also download the comparison
+    data as a CSV file. The feature co-occurrence analysis visualizes the
+    relationships between common feature pairings across the dataset using a
+    network graph.
+
+    Parameters:
+        vt_df (pd.DataFrame): The input dataset containing virtual tutor feature
+                              information. This dataset must include necessary
+                              features such as 'title', 'llm_model', 'uses_rag',
+                              'primary_function', and other predefined attributes.
+
+    Raises:
+        ValueError: If any necessary feature is missing from the input dataframe.
+
+    """
     st.header("🔍 Comparative Analysis")
 
     # Feature comparison matrix
@@ -1484,7 +1964,24 @@ def display_comparative_analysis(vt_df):
 
 
 def safe_value_counts(df, column, default_message="No data available"):
-    """Safely get value counts for a column, handling missing columns"""
+    """
+    Computes the value counts for a specified column in a DataFrame, handling cases where the
+    column does not exist or contains no valid data.
+
+    This function ensures safe computation of value counts by first checking if the specified
+    column exists in the DataFrame and has valid data. If the column is not found or the data
+    is not available, it returns None, allowing the caller to handle the result accordingly.
+
+    Args:
+        df (pd.DataFrame): The DataFrame to analyze.
+        column (str): The name of the column whose value counts are to be calculated.
+        default_message (str, optional): A fallback message indicating a lack of data.
+            Default is "No data available".
+
+    Returns:
+        pd.Series or None: The calculated value counts for the specified column. Returns
+        None if the column does not exist or has no valid data.
+    """
     if column in df.columns:
         counts = df[column].dropna().value_counts()
         if not counts.empty:
@@ -1493,7 +1990,19 @@ def safe_value_counts(df, column, default_message="No data available"):
 
 
 def display_research_gaps(vt_df, assessed_df):
-    """Identify and display research gaps"""
+    """
+    Analyzes research gaps in the provided datasets, including under-researched subject domains, missing evaluations,
+    underrepresented LLM models, and implementation rates of key features. Visualizations and summaries are used
+    to highlight these gaps.
+
+    Args:
+        vt_df (DataFrame): A pandas DataFrame containing the full dataset with various research-related fields.
+        assessed_df (DataFrame): A pandas DataFrame containing a subset of the dataset, or an assessment-specific view.
+
+    Raises:
+        KeyError: If required columns for the analysis are not present in the provided DataFrames.
+
+    """
     st.header("🎯 Research Gap Analysis")
 
     # Under-researched domains
@@ -1641,7 +2150,34 @@ def display_research_gaps(vt_df, assessed_df):
 
 
 def display_summary_report(all_df, assessed_df, vt_df):
-    """Generate and display a comprehensive summary report"""
+    """
+    Summarizes a systematic literature review of virtual tutors in higher education by generating
+    an executive summary, key findings, and recommendations based on the input datasets. It also
+    provides options to export the data in various formats.
+
+    Parameters
+    ----------
+    all_df : DataFrame
+        Complete dataset containing all reviewed papers.
+    assessed_df : DataFrame
+        Subset of `all_df` containing only the papers that have been fully assessed.
+    vt_df : DataFrame
+        Subset of `assessed_df` containing only papers related to virtual tutors.
+
+    Raises
+    ------
+    KeyError
+        Raised if a required column (e.g., 'llm_model', 'empirical_evaluation', etc.) is not
+        present in the provided DataFrames.
+
+    Notes
+    -----
+    This function processes the input datasets to extract statistical summaries, analyze trends,
+    identify gaps, and generate actionable recommendations. It leverages Streamlit to present
+    the findings interactively and to enable exporting the results in different formats. The
+    input DataFrames must have specific columns (e.g., 'is_implementation', 'empirical_evaluation',
+    'privacy_protection', etc.) for full functionality.
+    """
     st.header("📋 Summary Report")
 
     st.write("### Executive Summary")
@@ -1735,25 +2271,25 @@ def display_summary_report(all_df, assessed_df, vt_df):
     with col3:
         # Generate a text report
         report_text = f"""
-SYSTEMATIC LITERATURE REVIEW - VIRTUAL TUTORS IN HIGHER EDUCATION
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-
-OVERVIEW
-========
-Total Papers Analyzed: {total_papers}
-Papers Assessed: {assessed_papers}
-Virtual Tutor Papers: {vt_papers}
-Implementation Papers: {impl_papers}
-
-KEY FINDINGS
-============
-{summary_text}
-
-RECOMMENDATIONS
-===============
-{"".join(recommendations)}
-
-This report was automatically generated from the systematic literature review database.
+        SYSTEMATIC LITERATURE REVIEW - VIRTUAL TUTORS IN HIGHER EDUCATION
+        Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+        
+        OVERVIEW
+        ========
+        Total Papers Analyzed: {total_papers}
+        Papers Assessed: {assessed_papers}
+        Virtual Tutor Papers: {vt_papers}
+        Implementation Papers: {impl_papers}
+        
+        KEY FINDINGS
+        ============
+        {summary_text}
+        
+        RECOMMENDATIONS
+        ===============
+        {"".join(recommendations)}
+        
+        This report was automatically generated from the systematic literature review database.
         """
         st.download_button(
             "📄 Export Text Report",
@@ -1763,7 +2299,21 @@ This report was automatically generated from the systematic literature review da
         )
 
 def display_assessment_matrix(papers_df, vt_df):
-    """Display comprehensive assessment matrix for all papers"""
+    """
+    Displays an interactive assessment matrix for virtual tutors, enabling the comparison of various assessment
+    criteria across selected papers. Users can filter, format, and export data while visualizing completeness statistics
+    and analytics. This function includes options for customization and detailed data visualizations.
+
+    Parameters:
+        papers_df (pd.DataFrame): Dataframe containing details about individual research papers.
+        vt_df (pd.DataFrame): Dataframe containing detailed assessment metrics for virtual tutors.
+
+    Raises:
+        Streamlit-related exceptions: Errors might be raised if the Streamlit interface or components are misused.
+
+    Note:
+        This function makes use of the Streamlit library for rendering, interaction, and visualization.
+    """
     st.header("📊 Assessment Matrix")
 
     st.markdown("""
@@ -2027,7 +2577,27 @@ def display_assessment_matrix(papers_df, vt_df):
 
 
 def color_code_cell(val):
-    """Apply color coding to matrix cells based on value"""
+    """
+    Determines the background color for a DataFrame cell based on its value.
+
+    This function is used to apply conditional formatting to cells in a pandas
+    DataFrame. The output is a CSS style string that defines the background
+    color based on the given value's category. The categories include positive,
+    neutral, negative, and unspecified statuses, each mapped to specific colors.
+    The function ensures that NaN values are assigned a default light gray
+    background.
+
+    Parameters:
+    val : Any
+        The value of the cell that determines the background color.
+        Can be of any type, but it is converted to a lowercase string
+        for comparison purposes.
+
+    Returns:
+    str
+        A CSS background-color property value as a string, specifying the color
+        to be applied to the table cell.
+    """
     if pd.isna(val):
         return 'background-color: #f0f0f0'  # Light gray for NaN values
 
@@ -2059,6 +2629,46 @@ def color_code_cell(val):
 
 
 def main():
+    """
+    Main function to execute the Streamlit application's workflow for managing
+    a virtual literature dashboard. It initializes the application configuration,
+    setup the database, provides user interface for importing citations, processing
+    papers, importing arXiv papers, and navigating through various tabs for data
+    management and analysis.
+
+    Raises:
+        sqlite3.OperationalError: If the database setup is incomplete, primarily
+        when citations are not imported, or papers are not processed.
+
+    Attributes:
+        st (Streamlit module): Used for creating interactive UI components in the
+        application.
+
+    Functions:
+        load_dotenv: Loads environment variables from a .env file.
+        find_dotenv: Automatically locates the .env file path.
+        setup_database: Initializes the application's database structure if not
+        already set up.
+        import_citations: Imports citation metadata from configured sources into
+        the database.
+        process_papers: Processes PDFs in a predefined directory for integration
+        into the database.
+        import_arxiv_papers: Imports arXiv papers in PDF format from a user-specified
+        directory and logs the data into the database.
+        load_data_with_lists: Retrieves processed data from the database and formats
+        them for analysis and display.
+        create_filters: Generates various filter options for filtering data across
+        different tabs.
+        apply_filters: Applies chosen filters to the dataset to refine query results.
+        display_papers_tab: Displays papers with the applied filters.
+        display_assessments_tab: Displays assessments data along with aggregated
+        insights.
+        display_keywords_tab: Undertakes keyword-based analysis of the papers.
+        papers_view: Displays detailed paper assessment information.
+        add_paper: Adds new paper sources alongside their metadata to the database.
+        display_analysis_tab: Provides an interface for comprehensive analysis of
+        papers and related datasets.
+    """
     load_dotenv(find_dotenv())
     st.set_page_config(
         page_title="Virtual Tutor Literature Dashboard",
@@ -2084,7 +2694,6 @@ def main():
 
         st.divider()
 
-        # NEW: Add arXiv import section
         st.subheader("Import arXiv Papers")
         arxiv_dir = st.text_input(
             "arXiv PDF Directory",
