@@ -1,178 +1,130 @@
 -- Literature Management System Database Schema
--- For systematic literature review on virtual tutors in higher education
+-- General-purpose Systematic Literature Review tool
 
 -- Enable foreign key constraints
 PRAGMA foreign_keys = ON;
 
--- Main table for research papers
-CREATE TABLE IF NOT EXISTS papers (
-                                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                      doi TEXT UNIQUE,
-                                      title TEXT,
-                                      publication_year INTEGER,
-                                      authors TEXT,
-                                      venue TEXT,
-                                      volume TEXT,
-                                      publication_type TEXT,
-                                      publication_source TEXT,
-                                      processed BOOLEAN DEFAULT 0,
-                                      file_path TEXT DEFAULT NULL
+-- Global source registry (papers, web pages, etc.)
+-- Uniquely identified by DOI when available, otherwise by content hash
+CREATE TABLE IF NOT EXISTS sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    identifier TEXT NOT NULL UNIQUE,  -- DOI or content hash
+    identifier_type TEXT NOT NULL,    -- 'doi' or 'hash'
+    title TEXT,
+    authors TEXT,
+    year INTEGER,
+    abstract TEXT,
+    publication TEXT,                 -- journal/conference name
+    source_type TEXT,                 -- 'journal', 'conference', 'preprint', 'web', etc.
+    import_source TEXT,               -- where imported from: 'ieee', 'springer', 'bibtex', 'manual'
+    metadata TEXT,                    -- JSON: additional fields
+    content TEXT,                     -- extracted full text (from PDF, etc.)
+    file_path TEXT,                   -- path to local PDF if available
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table for virtual tutor assessments
-CREATE TABLE IF NOT EXISTS virtual_tutor_assessments (
-                                                         paper_id INTEGER PRIMARY KEY,
-    -- Phase 1: Initial Filtering
-                                                         is_virtual_tutor BOOLEAN,
-                                                         is_implementation BOOLEAN,
-    -- Phase 2: Core System Characteristics
-                                                         deployment_status TEXT,
-                                                         llm_model TEXT,
-                                                         uses_rag TEXT,
-                                                         primary_function TEXT,
-                                                         subject_domain TEXT,
-                                                         generates_assessments TEXT,
-    -- Phase 3: Publication Metadata
-                                                         publication_type TEXT,
-                                                         availability TEXT,
-    -- Phase 4: Technical Architecture
-                                                         lms_integration TEXT,
-    -- Phase 5: Pedagogical Features
-                                                         personalization TEXT,
-                                                         supports_collaboration TEXT,
-    -- Phase 6: Evaluation Details
-                                                         empirical_evaluation TEXT,
-                                                         sample_size TEXT,
-                                                         evaluation_duration TEXT,
-    -- Phase 7: Implementation Context
-                                                         institution_type TEXT,
-                                                         development_approach TEXT,
-                                                         language_support TEXT,
-    -- Phase 8: Additional Considerations
-                                                         privacy_protection TEXT,
-                                                         cost_requirements TEXT,
-                                                         reference_architecture TEXT,
-    -- Metadata
-                                                         assessment_date TIMESTAMP,
-                                                         FOREIGN KEY (paper_id) REFERENCES papers (id)
+-- SLR projects
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    topic TEXT,
+    description TEXT,
+    config TEXT,  -- JSON: questions, answer types, agent settings
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table for keywords
+-- Project <-> Source junction (a source can appear in multiple projects)
+CREATE TABLE IF NOT EXISTS project_sources (
+    project_id INTEGER NOT NULL,
+    source_id INTEGER NOT NULL,
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (project_id, source_id),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+);
+
+-- Content matrix (project-scoped assessment results)
+CREATE TABLE IF NOT EXISTS content_matrix (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    source_id INTEGER NOT NULL,
+    question_key TEXT NOT NULL,
+    answer TEXT,
+    answer_type TEXT,  -- 'boolean', 'enum', 'text', 'numeric'
+    confidence REAL,
+    citations TEXT,    -- JSON array of citation references
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(project_id, source_id, question_key),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+);
+
+-- Keywords table
 CREATE TABLE IF NOT EXISTS keywords (
-                                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                        keyword TEXT UNIQUE
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    keyword TEXT UNIQUE
 );
 
--- Relationship table for keywords and papers (many-to-many)
-CREATE TABLE IF NOT EXISTS rel_keywords_papers (
-                                                   paper_id INTEGER,
-                                                   keyword_id INTEGER,
-                                                   PRIMARY KEY (paper_id, keyword_id),
-                                                   FOREIGN KEY (paper_id) REFERENCES papers (id) ON DELETE CASCADE,
-                                                   FOREIGN KEY (keyword_id) REFERENCES keywords (id) ON DELETE CASCADE
-);
-
--- Normalized tables for list fields from assessments
--- These tables store multi-valued attributes from the assessment phases
-
--- Phase 4: Architecture components (multiple per paper)
-CREATE TABLE IF NOT EXISTS assessment_architecture_components (
-                                                                  paper_id INTEGER,
-                                                                  component TEXT,
-                                                                  PRIMARY KEY (paper_id, component),
-                                                                  FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-);
-
--- Phase 4: Interaction modalities (multiple per paper)
-CREATE TABLE IF NOT EXISTS assessment_interaction_modalities (
-                                                                 paper_id INTEGER,
-                                                                 modality TEXT,
-                                                                 PRIMARY KEY (paper_id, modality),
-                                                                 FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-);
-
--- Phase 4: Analytics features (multiple per paper)
-CREATE TABLE IF NOT EXISTS assessment_analytics_features (
-                                                             paper_id INTEGER,
-                                                             feature TEXT,
-                                                             PRIMARY KEY (paper_id, feature),
-                                                             FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-);
-
--- Phase 5: Pedagogical features (multiple per paper)
-CREATE TABLE IF NOT EXISTS assessment_pedagogical_features (
-                                                               paper_id INTEGER,
-                                                               feature TEXT,
-                                                               PRIMARY KEY (paper_id, feature),
-                                                               FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-);
-
--- Phase 5: Collaboration types (multiple per paper)
-CREATE TABLE IF NOT EXISTS assessment_collaboration_types (
-                                                              paper_id INTEGER,
-                                                              collaboration_type TEXT,
-                                                              PRIMARY KEY (paper_id, collaboration_type),
-                                                              FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
-);
-
--- Phase 6: Aspects evaluated (multiple per paper)
-CREATE TABLE IF NOT EXISTS assessment_aspects_evaluated (
-                                                            paper_id INTEGER,
-                                                            aspect TEXT,
-                                                            PRIMARY KEY (paper_id, aspect),
-                                                            FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+-- Relationship table for keywords and sources (many-to-many)
+CREATE TABLE IF NOT EXISTS rel_keywords_sources (
+    source_id INTEGER,
+    keyword_id INTEGER,
+    PRIMARY KEY (source_id, keyword_id),
+    FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+    FOREIGN KEY (keyword_id) REFERENCES keywords(id) ON DELETE CASCADE
 );
 
 -- Indexes for better query performance
-CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);
-CREATE INDEX IF NOT EXISTS idx_papers_year ON papers(publication_year);
-CREATE INDEX IF NOT EXISTS idx_papers_processed ON papers(processed);
-CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(publication_source);
 
-CREATE INDEX IF NOT EXISTS idx_assessments_virtual_tutor ON virtual_tutor_assessments(is_virtual_tutor);
-CREATE INDEX IF NOT EXISTS idx_assessments_implementation ON virtual_tutor_assessments(is_implementation);
-CREATE INDEX IF NOT EXISTS idx_assessments_llm_model ON virtual_tutor_assessments(llm_model);
-CREATE INDEX IF NOT EXISTS idx_assessments_evaluation ON virtual_tutor_assessments(empirical_evaluation);
+-- Sources indexes
+CREATE INDEX IF NOT EXISTS idx_sources_identifier ON sources(identifier);
+CREATE INDEX IF NOT EXISTS idx_sources_year ON sources(year);
+CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(source_type);
+CREATE INDEX IF NOT EXISTS idx_sources_import ON sources(import_source);
 
+-- Projects indexes
+CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
+
+-- Project sources indexes
+CREATE INDEX IF NOT EXISTS idx_ps_project ON project_sources(project_id);
+CREATE INDEX IF NOT EXISTS idx_ps_source ON project_sources(source_id);
+
+-- Content matrix indexes
+CREATE INDEX IF NOT EXISTS idx_cm_project ON content_matrix(project_id);
+CREATE INDEX IF NOT EXISTS idx_cm_source ON content_matrix(source_id);
+CREATE INDEX IF NOT EXISTS idx_cm_question ON content_matrix(question_key);
+
+-- Keywords indexes
 CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON keywords(keyword);
-CREATE INDEX IF NOT EXISTS idx_rel_kp_paper ON rel_keywords_papers(paper_id);
-CREATE INDEX IF NOT EXISTS idx_rel_kp_keyword ON rel_keywords_papers(keyword_id);
+CREATE INDEX IF NOT EXISTS idx_rel_ks_source ON rel_keywords_sources(source_id);
+CREATE INDEX IF NOT EXISTS idx_rel_ks_keyword ON rel_keywords_sources(keyword_id);
 
 -- Views for common queries
 
--- View combining papers with their assessment status
-CREATE VIEW IF NOT EXISTS papers_with_assessment_status AS
-SELECT
-    p.*,
-    a.is_virtual_tutor,
-    a.is_implementation,
-    a.llm_model,
-    a.primary_function,
-    a.empirical_evaluation,
-    a.assessment_date,
-    CASE
-        WHEN a.paper_id IS NULL THEN 'Unassessed'
-        WHEN a.is_virtual_tutor = 1 THEN 'Virtual Tutor'
-        ELSE 'Not Virtual Tutor'
-        END as assessment_status
-FROM papers p
-         LEFT JOIN virtual_tutor_assessments a ON p.id = a.paper_id;
-
--- View for papers with implementation details
-CREATE VIEW IF NOT EXISTS implementation_papers AS
-SELECT
-    p.*,
-    a.*
-FROM papers p
-         INNER JOIN virtual_tutor_assessments a ON p.id = a.paper_id
-WHERE a.is_implementation = 1;
-
--- View for keyword frequency analysis
+-- View for keyword frequency analysis (global)
 CREATE VIEW IF NOT EXISTS keyword_frequency AS
 SELECT
     k.keyword,
-    COUNT(r.paper_id) as paper_count
+    COUNT(r.source_id) as source_count
 FROM keywords k
-         LEFT JOIN rel_keywords_papers r ON k.id = r.keyword_id
+    LEFT JOIN rel_keywords_sources r ON k.id = r.keyword_id
 GROUP BY k.id, k.keyword
-ORDER BY paper_count DESC;
+ORDER BY source_count DESC;
+
+-- View for project sources with details
+CREATE VIEW IF NOT EXISTS project_sources_view AS
+SELECT
+    ps.project_id,
+    p.name as project_name,
+    s.id as source_id,
+    s.identifier,
+    s.title,
+    s.authors,
+    s.year,
+    s.publication,
+    s.source_type,
+    s.import_source,
+    ps.added_at
+FROM project_sources ps
+    JOIN projects p ON ps.project_id = p.id
+    JOIN sources s ON ps.source_id = s.id;

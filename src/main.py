@@ -1,24 +1,22 @@
 """
-This is the main script for the literature management application.
-It provides a streamlit interface to import citations, process papers, and view the database.
+Literature Management System - Streamlit Dashboard
+
+A general-purpose Systematic Literature Review (SLR) tool.
+Supports multiple projects with configurable questions and content matrix.
 """
 import streamlit as st
 import pandas as pd
 import sqlite3
 import json
 import logging
-import io
+import os
 import numpy as np
-import xlsxwriter
-import plotly.graph_objects as go
 import plotly.express as px
-import networkx as nx
-from datetime import datetime
 from dotenv import find_dotenv, load_dotenv
-from process_papers import PdfProcessor
 from pathlib import Path
 from import_citations import CitationProcessor
-from view_paper import papers_view
+from models import ProjectConfig, AnswerType
+from assessment import AssessmentRunner, get_matrix_data, clear_matrix
 
 
 # Set up logging
@@ -28,69 +26,32 @@ logger = logging.getLogger(__name__)
 
 @st.cache_resource
 def get_connection():
-    """
-    Caches and retrieves an SQLite database connection. Ensures the database
-    is correctly initialized if it is accessed for the first time by verifying
-    the existence of required tables.
-
-    Raises:
-        sqlite3.Error: If there is an issue connecting to or querying the
-            SQLite database.
-
-    Returns:
-        sqlite3.Connection: The SQLite connection object for interacting
-        with the 'literature.db' database.
-    """
+    """Get cached SQLite database connection."""
     conn = sqlite3.connect('literature.db', check_same_thread=False)
 
     # Check if tables exist
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers'")
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sources'")
     if cursor.fetchone() is None:
-        # Database needs initialization
         setup_database_with_connection(conn)
 
     return conn
 
 
 def setup_database_with_connection(conn, schema_path='src/schema.sql'):
-    """
-    Initializes a database using the provided connection and schema file.
-
-    This function checks for the existence of a schema file, reads its contents, and
-    executes the SQL commands within it to set up the database schema. If the schema
-    file does not exist or an error occurs during execution, the process will log
-    the error and raise an appropriate exception.
-
-    Args:
-        conn (sqlite3.Connection): A SQLite database connection object.
-        schema_path (str): The file path of the SQL schema file. Defaults to 'src/schema.sql'.
-
-    Raises:
-        FileNotFoundError: If the schema file does not exist at the provided path.
-        sqlite3.Error: If there are errors related to database operations.
-        Exception: If an unexpected error occurs during database setup.
-    """
+    """Initialize database using the provided connection and schema file."""
     cursor = conn.cursor()
 
     try:
-        # Check if schema file exists
         if not Path(schema_path).exists():
             st.error(f"Schema file '{schema_path}' not found!")
-            st.info("Make sure schema.sql is in the same directory as main.py")
             raise FileNotFoundError(f"Schema file '{schema_path}' not found")
 
-        # Read schema from file
         with open(schema_path, 'r', encoding='utf-8') as f:
             schema_sql = f.read()
 
-        # Execute the schema
         conn.executescript(schema_sql)
-
-        # Commit changes
         conn.commit()
-
-        # Log success
         logger.info(f"Database initialized successfully using {schema_path}")
 
     except FileNotFoundError as e:
@@ -99,254 +60,286 @@ def setup_database_with_connection(conn, schema_path='src/schema.sql'):
     except sqlite3.Error as e:
         logger.error(f"Database error during schema creation: {e}")
         raise
-    except Exception as e:
-        logger.error(f"Unexpected error during database setup: {e}")
-        raise
-
-
-def load_data_with_lists(base_query=None):
-    """
-    Loads data using a provided query or a default query, retrieves additional list
-    attributes from auxiliary tables using SQL queries, and merges this information
-    with the main data. Columns representing boolean values are converted into
-    Python boolean types for consistency. The method handles cases where certain
-    tables may not exist in the database and will proceed without merging those
-    tables.
-
-    Parameters:
-    base_query: Optional[str]
-        A custom SQL query to fetch the main data. If not provided, a default
-        query will be used.
-
-    Returns:
-    pandas.DataFrame
-        A DataFrame containing the main data along with additional list attributes
-        if available. Boolean columns are converted to Python boolean values for
-        standardization.
-
-    Raises:
-    sqlite3.OperationalError
-        If there are issues querying the database, except when specific tables do
-        not exist in the database, which are handled gracefully.
-
-    Notes:
-    - Default query is used if `base_query` is not supplied.
-    - Auxiliary tables are queried to compute list attributes such as `architecture_components`,
-      `interaction_modality`, `analytics_features`, `pedagogical_features`,
-      `collaboration_types`, and `aspects_evaluated`.
-    - Sets of list attributes are joined to the main data set based on the
-      `id` column in the main data and `paper_id` in the auxiliary data.
-    - Handles cases where certain auxiliary tables are missing by skipping those
-      joins.
-    """
-    try:
-        conn = get_connection()
-
-        # Use the provided query or default
-        query = base_query if base_query else get_all_papers_query()
-        papers_df = pd.read_sql_query(query, conn)
-
-        if papers_df.empty:
-            return papers_df
-
-        # Add list fields using GROUP_CONCAT
-        list_queries = {
-            'architecture_components': """
-                                       SELECT paper_id, GROUP_CONCAT(component, ',') as architecture_components
-                                       FROM assessment_architecture_components
-                                       GROUP BY paper_id
-                                       """,
-            'interaction_modality': """
-                                    SELECT paper_id, GROUP_CONCAT(modality, ',') as interaction_modality
-                                    FROM assessment_interaction_modalities
-                                    GROUP BY paper_id
-                                    """,
-            'analytics_features': """
-                                  SELECT paper_id, GROUP_CONCAT(feature, ',') as analytics_features
-                                  FROM assessment_analytics_features
-                                  GROUP BY paper_id
-                                  """,
-            'pedagogical_features': """
-                                    SELECT paper_id, GROUP_CONCAT(feature, ',') as pedagogical_features
-                                    FROM assessment_pedagogical_features
-                                    GROUP BY paper_id
-                                    """,
-            'collaboration_types': """
-                                   SELECT paper_id, GROUP_CONCAT(collaboration_type, ',') as collaboration_types
-                                   FROM assessment_collaboration_types
-                                   GROUP BY paper_id
-                                   """,
-            'aspects_evaluated': """
-                                 SELECT paper_id, GROUP_CONCAT(aspect, ',') as aspects_evaluated
-                                 FROM assessment_aspects_evaluated
-                                 GROUP BY paper_id
-                                 """
-        }
-
-        # Join each list field
-        for field, query in list_queries.items():
-            try:
-                list_df = pd.read_sql_query(query, conn)
-                if not list_df.empty:
-                    papers_df = papers_df.merge(
-                        list_df,
-                        left_on='id',
-                        right_on='paper_id',
-                        how='left'
-                    )
-                    # Drop the duplicate paper_id column
-                    if 'paper_id' in papers_df.columns and 'id' in papers_df.columns:
-                        papers_df = papers_df.drop('paper_id', axis=1)
-            except Exception:
-                # Table might not exist yet, skip
-                pass
-
-        # Convert SQLite integer boolean columns to Python boolean
-        bool_columns = ['is_virtual_tutor', 'is_implementation']
-        for col in bool_columns:
-            if col in papers_df.columns:
-                papers_df[col] = papers_df[col].astype('Int64')
-                papers_df[col] = papers_df[col] == 1
-
-        return papers_df
-
-    except sqlite3.OperationalError as e:
-        if "no such table" in str(e):
-            # Return empty dataframe if tables don't exist yet
-            return pd.DataFrame()
-        raise
-
-
-def get_all_papers_query():
-    """
-    Generate a SQL query to retrieve all papers and their associated assessment details.
-
-    This function constructs and returns the SQL query used to fetch records from the `papers`
-    table and its associated data from the `virtual_tutor_assessments` table. The query includes
-    fields from both tables, along with a computed column `assessment_status` that categorizes
-    the paper based on its assessment details.
-
-    Returns:
-        str: SQL query string to fetch papers and their assessment information.
-    """
-    return """
-           SELECT
-               p.*,
-               a.is_virtual_tutor,
-               a.is_implementation,
-               a.deployment_status,
-               a.llm_model,
-               a.uses_rag,
-               a.primary_function,
-               a.subject_domain,
-               a.generates_assessments,
-               a.publication_type as assessment_publication_type,
-               a.availability,
-               a.lms_integration,
-               a.personalization,
-               a.supports_collaboration,
-               a.empirical_evaluation,
-               a.sample_size,
-               a.evaluation_duration,
-               a.institution_type,
-               a.development_approach,
-               a.language_support,
-               a.privacy_protection,
-               a.cost_requirements,
-               a.reference_architecture,
-               a.assessment_date,
-               CASE
-                   WHEN a.paper_id IS NULL THEN 'Unassessed'
-                   WHEN a.is_virtual_tutor = 1 THEN 'Virtual Tutor'
-                   ELSE 'Not Virtual Tutor'
-                   END as assessment_status
-           FROM papers p
-                    LEFT JOIN virtual_tutor_assessments a ON p.id = a.paper_id
-           """
-
-
-def load_data(query):
-    """
-    Loads data from a database into a Pandas DataFrame based on the provided SQL query.
-
-    If no query is provided, a default query is used to fetch all papers.
-    Converts specific integer boolean columns from the SQLite database to Python
-    boolean format, while properly handling NULL values.
-
-    Args:
-        query (Optional[str]): SQL query to fetch data. If None, a default query will be used.
-
-    Returns:
-        DataFrame: The resulting data fetched from the database, with boolean columns
-        properly converted.
-    """
-    conn = get_connection()
-
-    # Use the standard query if none provided
-    query_to_use = query if query else get_all_papers_query()
-    df = pd.read_sql_query(query_to_use, conn)
-
-    # Convert SQLite integer boolean columns to Python boolean
-    bool_columns = ['is_virtual_tutor', 'is_implementation']
-    for col in bool_columns:
-        if col in df.columns:
-            df[col] = df[col].astype('Int64')  # Use nullable integer type
-            df[col] = df[col] == 1  # Convert to boolean while preserving NULL
-
-    return df
 
 
 def setup_database(db_path: str = 'literature.db'):
-    """
-    Sets up the database by connecting to the given SQLite database file path and
-    verifying its schema for compatibility. Ensures that the database schema supports
-    arXiv papers without DOIs. If incompatible, the user is prompted with a warning
-    and guidance on updating the schema.
+    """Initialize the database from schema file if needed."""
+    schema_path = Path('src/schema.sql')
 
-    Parameters:
-    db_path (str): The path to the SQLite database file. Defaults to 'literature.db'.
-    """
-    conn = sqlite3.connect(db_path)
+    if not schema_path.exists():
+        st.error("Schema file not found!")
+        st.info("Please make sure src/schema.sql exists")
+        return
 
-    # Check if papers table exists with old schema
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Check if tables already exist
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sources'")
+        if cursor.fetchone() is None:
+            with open(schema_path, 'r', encoding='utf-8') as f:
+                schema_sql = f.read()
+            conn.executescript(schema_sql)
+            conn.commit()
+            logger.info("Database initialized successfully")
+
+        conn.close()
+
+    except Exception as e:
+        st.error(f"Database initialization error: {e}")
+        raise
+
+
+# Project management functions
+
+def load_projects():
+    """Load all projects from database."""
+    conn = get_connection()
+    query = "SELECT id, name, topic, description, config, created_at FROM projects ORDER BY name"
+    return pd.read_sql_query(query, conn)
+
+
+def get_project(project_id: int):
+    """Get a single project by ID."""
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers'")
-    if cursor.fetchone():
-        # Table exists, check if DOI has NOT NULL constraint
-        cursor.execute("PRAGMA table_info(papers)")
-        columns = cursor.fetchall()
+    cursor.execute(
+        "SELECT id, name, topic, description, config, created_at FROM projects WHERE id = ?",
+        (project_id,)
+    )
+    row = cursor.fetchone()
+    if row:
+        return {
+            'id': row[0],
+            'name': row[1],
+            'topic': row[2],
+            'description': row[3],
+            'config': row[4],
+            'created_at': row[5]
+        }
+    return None
 
-        for col in columns:
-            if col[1] == 'doi' and col[3] == 1:  # NOT NULL constraint exists
-                st.warning("Database schema needs update to support arXiv papers without DOIs.")
-                st.info("Please run: `python migrate_database.py` to update your database schema.")
-                break
 
-    setup_database_with_connection(conn)
-    conn.close()
+def create_project(name: str, topic: str = '', description: str = '', config: str = '{}'):
+    """Create a new project."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO projects (name, topic, description, config) VALUES (?, ?, ?, ?)",
+        (name, topic, description, config)
+    )
+    conn.commit()
+    return cursor.lastrowid
 
 
-def import_citations():
-    """
-    Imports and processes citation files from different sources based on a pre-configured file
-    list. The function identifies existing files within specified directories and processes
-    them using a citation processor.
+def update_project(project_id: int, name: str, topic: str, description: str, config: str):
+    """Update an existing project."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE projects SET name = ?, topic = ?, description = ?, config = ? WHERE id = ?",
+        (name, topic, description, config, project_id)
+    )
+    conn.commit()
 
-    Raises:
-        FileNotFoundError: If one or more configured files do not exist.
-    """
-    # Configure base path for search results
+
+def delete_project(project_id: int):
+    """Delete a project and its associations."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+
+
+def duplicate_project(project_id: int, new_name: str) -> int:
+    """Duplicate a project with a new name (config only, not sources)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Get original project
+    cursor.execute(
+        "SELECT topic, description, config FROM projects WHERE id = ?",
+        (project_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise ValueError(f"Project {project_id} not found")
+
+    topic, description, config = row
+
+    # Create new project
+    cursor.execute(
+        "INSERT INTO projects (name, topic, description, config) VALUES (?, ?, ?, ?)",
+        (new_name, topic, description, config)
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+# Source management functions
+
+def load_sources(project_id: int = None):
+    """Load sources, optionally filtered by project."""
+    conn = get_connection()
+
+    if project_id:
+        query = """
+            SELECT
+                s.id,
+                s.identifier,
+                s.identifier_type,
+                s.title,
+                s.authors,
+                s.year,
+                s.publication,
+                s.source_type,
+                s.import_source,
+                s.file_path
+            FROM sources s
+            JOIN project_sources ps ON s.id = ps.source_id
+            WHERE ps.project_id = ?
+            ORDER BY s.year DESC, s.title
+        """
+        return pd.read_sql_query(query, conn, params=(project_id,))
+    else:
+        query = """
+            SELECT
+                id,
+                identifier,
+                identifier_type,
+                title,
+                authors,
+                year,
+                publication,
+                source_type,
+                import_source,
+                file_path
+            FROM sources
+            ORDER BY year DESC, title
+        """
+        return pd.read_sql_query(query, conn)
+
+
+def load_all_sources():
+    """Load all sources (global view)."""
+    return load_sources(project_id=None)
+
+
+def add_source_to_project(source_id: int, project_id: int):
+    """Link an existing source to a project."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT OR IGNORE INTO project_sources (project_id, source_id) VALUES (?, ?)",
+            (project_id, source_id)
+        )
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"Error adding source to project: {e}")
+        return False
+
+
+def remove_source_from_project(source_id: int, project_id: int):
+    """Remove a source from a project (doesn't delete the source)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM project_sources WHERE project_id = ? AND source_id = ?",
+        (project_id, source_id)
+    )
+    conn.commit()
+
+
+def get_source_details(source_id: int) -> dict:
+    """Get full details for a source including keywords."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, identifier, identifier_type, title, authors, year,
+               abstract, publication, source_type, import_source, content, metadata
+        FROM sources WHERE id = ?
+    """, (source_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    # Get keywords
+    cursor.execute("""
+        SELECT k.keyword FROM keywords k
+        JOIN rel_keywords_sources r ON k.id = r.keyword_id
+        WHERE r.source_id = ?
+    """, (source_id,))
+    keywords = [r[0] for r in cursor.fetchall()]
+
+    return {
+        'id': row[0],
+        'identifier': row[1],
+        'identifier_type': row[2],
+        'title': row[3],
+        'authors': row[4],
+        'year': row[5],
+        'abstract': row[6],
+        'publication': row[7],
+        'source_type': row[8],
+        'import_source': row[9],
+        'content': row[10],
+        'metadata': row[11],
+        'keywords': keywords
+    }
+
+
+def delete_source(source_id: int):
+    """Delete a source and all its associations."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    # Delete from junction tables first
+    cursor.execute("DELETE FROM project_sources WHERE source_id = ?", (source_id,))
+    cursor.execute("DELETE FROM rel_keywords_sources WHERE source_id = ?", (source_id,))
+    cursor.execute("DELETE FROM content_matrix WHERE source_id = ?", (source_id,))
+    # Delete the source
+    cursor.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+    conn.commit()
+
+
+def bulk_add_sources_to_project(source_ids: list, project_id: int):
+    """Add multiple sources to a project."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    for source_id in source_ids:
+        cursor.execute(
+            "INSERT OR IGNORE INTO project_sources (project_id, source_id) VALUES (?, ?)",
+            (project_id, source_id)
+        )
+    conn.commit()
+
+
+def bulk_remove_sources_from_project(source_ids: list, project_id: int):
+    """Remove multiple sources from a project."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    for source_id in source_ids:
+        cursor.execute(
+            "DELETE FROM project_sources WHERE project_id = ? AND source_id = ?",
+            (project_id, source_id)
+        )
+    conn.commit()
+
+
+def import_citations(project_id: int = None):
+    """Import citations from configured sources."""
     search_dir = Path('search_results')
 
-    # Configure files with relative paths - ONLY include files that exist
     file_config = {
         'ieee': [search_dir / 'ieee.csv'],
         'bibtex': [
             search_dir / 'acm.bib',
             search_dir / 'ScienceDirect_1.bib',
             search_dir / 'ScienceDirect_2.bib',
-            # search_dir / 'wiley_1.bib',
-            # search_dir / 'wiley_2.bib'
         ],
         'springer': [
             search_dir / 'SpringerLink_1.csv',
@@ -354,64 +347,12 @@ def import_citations():
         ],
     }
 
-    processor = CitationProcessor()
+    processor = CitationProcessor(project_id=project_id)
     processor.process_files(file_config)
 
 
-def process_papers():
-    """
-    Processes a directory containing PDF papers using a PdfProcessor instance.
-
-    Processes all PDF files located in the 'papers' directory. Ensures that the
-    resources and connections used by PdfProcessor are properly closed after the
-    processing is complete.
-
-    Raises:
-        Any exception encountered during the PDF processing will propagate
-        to the caller.
-    """
-    processor = PdfProcessor()
-    try:
-        processor.process_directory('papers')
-    finally:
-        processor.close()
-
-
-def import_arxiv_papers(directory_path: str):
-    """
-    Processes all PDF files in the given directory, extracting relevant information
-    from them and handling them appropriately. This function leverages the PdfProcessor
-    to traverse the provided directory, optionally creating missing directories or
-    handling issues as necessary.
-
-    Args:
-        directory_path (str): The path to the directory containing the PDF files
-        to be processed.
-
-    Raises:
-        Any exception raised by the PdfProcessor during processing will be propagated if
-        unhandled in the processing flow.
-    """
-    processor = PdfProcessor()
-    try:
-        processor.process_directory(directory_path, create_missing=True)
-    finally:
-        processor.close()
-
-
 class NumpyEncoder(json.JSONEncoder):
-    """
-    Encoder class for converting NumPy types into JSON serializable objects.
-
-    This class extends `json.JSONEncoder` to handle the serialization of
-    NumPy data types such as `np.integer`, `np.floating`, and `np.ndarray`,
-    which are not natively serializable by the standard JSON encoder.
-
-    It is useful when working with data containing NumPy objects that need
-    to be serialized into JSON format. The class ensures that NumPy scalars
-    are converted to their Python counterparts, and NumPy arrays are converted
-    to Python lists before encoding.
-    """
+    """JSON encoder that handles NumPy types."""
     def default(self, obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -422,2356 +363,895 @@ class NumpyEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def display_papers_tab(papers_df):
-    """
-    Displays a tab with visualizations and statistics about papers dataset.
+# Keyword functions
 
-    This function is designed to present relevant metrics and graphical
-    representations for a given DataFrame of papers. It includes sections
-    for basic statistics, publications per year, top venues, distribution
-    by publication sources, and a searchable interactive table for further
-    exploration of the papers' details. If the dataset is empty, a warning
-    message is displayed.
+def load_keyword_data(project_id: int = None):
+    """Load keyword frequency data, optionally scoped to a project."""
+    conn = get_connection()
 
-    Parameters:
-        papers_df (DataFrame): A pandas DataFrame containing papers data with
-            relevant fields such as title, authors, publication_year, venue,
-            publication_type, publication_source, doi, and volume.
+    if project_id:
+        query = """
+            SELECT
+                k.keyword,
+                COUNT(DISTINCT r.source_id) as source_count
+            FROM keywords k
+            JOIN rel_keywords_sources r ON k.id = r.keyword_id
+            JOIN project_sources ps ON r.source_id = ps.source_id
+            WHERE ps.project_id = ?
+            GROUP BY k.id, k.keyword
+            HAVING source_count > 0
+            ORDER BY source_count DESC
+        """
+        return pd.read_sql_query(query, conn, params=(project_id,))
+    else:
+        query = """
+            SELECT
+                k.keyword,
+                COUNT(r.source_id) as source_count
+            FROM keywords k
+            LEFT JOIN rel_keywords_sources r ON k.id = r.keyword_id
+            GROUP BY k.id, k.keyword
+            HAVING source_count > 0
+            ORDER BY source_count DESC
+        """
+        return pd.read_sql_query(query, conn)
 
-    Raises:
-        ValueError: If the required fields are missing from the DataFrame.
 
-    Returns:
-        None
-    """
-    st.title("Papers")
+# UI Components
 
-    if papers_df.empty:
-        st.warning("No papers match the current filter criteria")
+def display_project_selector():
+    """Display project selector in sidebar and return selected project ID."""
+    projects_df = load_projects()
+
+    if projects_df.empty:
+        st.sidebar.info("No projects yet. Create one in the Projects tab.")
+        return None
+
+    # Build options list
+    options = [{"id": None, "label": "All Sources (Global)"}]
+    for _, row in projects_df.iterrows():
+        options.append({"id": row['id'], "label": row['name']})
+
+    # Get current selection from session state
+    current_idx = 0
+    if 'selected_project_id' in st.session_state:
+        for i, opt in enumerate(options):
+            if opt['id'] == st.session_state.selected_project_id:
+                current_idx = i
+                break
+
+    selected = st.sidebar.selectbox(
+        "Project",
+        options,
+        index=current_idx,
+        format_func=lambda x: x['label']
+    )
+
+    st.session_state.selected_project_id = selected['id']
+    return selected['id']
+
+
+def display_projects_tab():
+    """Display the projects management tab."""
+    st.title("Projects")
+
+    # Create new project form
+    st.subheader("Create New Project")
+    with st.form("create_project_form"):
+        name = st.text_input("Project Name*", help="Required")
+        topic = st.text_input("Topic", help="Brief topic description")
+        description = st.text_area("Description", help="Detailed project description")
+
+        st.markdown("**Configuration (JSON)**")
+        config_help = """Define questions for the content matrix. Example:
+```json
+{
+  "questions": [
+    {"key": "uses_llm", "text": "Does it use LLM?", "answer_type": "boolean"},
+    {"key": "method", "text": "What method is used?", "answer_type": "text"}
+  ]
+}
+```"""
+        st.caption(config_help)
+        config = st.text_area("Config JSON", value="{}", height=150)
+
+        submitted = st.form_submit_button("Create Project")
+
+        if submitted:
+            if not name:
+                st.error("Project name is required")
+            else:
+                try:
+                    json.loads(config)  # Validate JSON
+                    project_id = create_project(name, topic, description, config)
+                    st.success(f"Created project: {name}")
+                    st.session_state.selected_project_id = project_id
+                    st.rerun()
+                except json.JSONDecodeError as e:
+                    st.error(f"Invalid JSON configuration: {e}")
+
+    st.divider()
+
+    # List existing projects
+    st.subheader("Existing Projects")
+    projects_df = load_projects()
+
+    if projects_df.empty:
+        st.info("No projects created yet.")
+        return
+
+    for _, row in projects_df.iterrows():
+        project_id = row['id']
+        edit_key = f"editing_project_{project_id}"
+
+        with st.expander(f"**{row['name']}** - {row['topic'] or 'No topic'}"):
+            # Check if we're editing this project
+            if st.session_state.get(edit_key, False):
+                # Edit form
+                with st.form(f"edit_form_{project_id}"):
+                    st.subheader("Edit Project")
+                    edit_name = st.text_input("Name", value=row['name'])
+                    edit_topic = st.text_input("Topic", value=row['topic'] or '')
+                    edit_desc = st.text_area("Description", value=row['description'] or '')
+                    edit_config = st.text_area("Config JSON", value=row['config'] or '{}', height=200)
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.form_submit_button("Save"):
+                            try:
+                                json.loads(edit_config)  # Validate JSON
+                                update_project(project_id, edit_name, edit_topic, edit_desc, edit_config)
+                                st.session_state[edit_key] = False
+                                st.success("Project updated!")
+                                st.rerun()
+                            except json.JSONDecodeError as e:
+                                st.error(f"Invalid JSON: {e}")
+                    with col2:
+                        if st.form_submit_button("Cancel"):
+                            st.session_state[edit_key] = False
+                            st.rerun()
+            else:
+                # Display mode
+                st.write(f"**Description:** {row['description'] or 'None'}")
+                st.write(f"**Created:** {row['created_at']}")
+
+                # Show source count
+                conn = get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT COUNT(*) FROM project_sources WHERE project_id = ?",
+                    (project_id,)
+                )
+                source_count = cursor.fetchone()[0]
+                st.write(f"**Sources:** {source_count}")
+
+                # Config display
+                if row['config']:
+                    try:
+                        config_data = json.loads(row['config'])
+                        if config_data:
+                            st.json(config_data)
+                    except json.JSONDecodeError:
+                        st.code(row['config'])
+
+                # Action buttons
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    if st.button("Select", key=f"select_{project_id}"):
+                        st.session_state.selected_project_id = project_id
+                        st.rerun()
+                with col2:
+                    if st.button("Edit", key=f"edit_{project_id}"):
+                        st.session_state[edit_key] = True
+                        st.rerun()
+                with col3:
+                    if st.button("Duplicate", key=f"dup_{project_id}"):
+                        new_id = duplicate_project(project_id, f"{row['name']} (copy)")
+                        st.success(f"Created copy: {row['name']} (copy)")
+                        st.rerun()
+                with col4:
+                    if st.button("Delete", key=f"delete_{project_id}", type="secondary"):
+                        delete_project(project_id)
+                        if st.session_state.get('selected_project_id') == project_id:
+                            st.session_state.selected_project_id = None
+                        st.rerun()
+
+
+def display_sources_tab(project_id: int = None):
+    """Display the sources tab with statistics and data table."""
+    st.title("Sources")
+
+    # Show which project we're viewing
+    if project_id:
+        project = get_project(project_id)
+        if project:
+            st.caption(f"Viewing sources for project: **{project['name']}**")
+    else:
+        st.caption("Viewing all sources (global)")
+
+    sources_df = load_sources(project_id)
+
+    if sources_df.empty:
+        st.warning("No sources found. Import some citations first.")
         return
 
     # Basic statistics
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Papers", len(papers_df))
+        st.metric("Total Sources", len(sources_df))
     with col2:
-        st.metric("Unique Venues", papers_df['venue'].nunique())
+        years = sources_df['year'].dropna()
+        if not years.empty:
+            st.metric("Year Range", f"{int(years.min())} - {int(years.max())}")
     with col3:
-        year_range = f"{papers_df['publication_year'].min()}-{papers_df['publication_year'].max()}"
-        st.metric("Year Range", year_range)
+        imports = sources_df['import_source'].nunique()
+        st.metric("Import Sources", imports)
 
-    # Publications per year
-    st.subheader("Publications per Year")
-    year_counts = papers_df['publication_year'].value_counts().sort_index()
-    df_years = pd.DataFrame({
-        'Year': year_counts.index,
-        'Publications': year_counts.values
-    }).reset_index(drop=True)
+    st.divider()
 
-    if not df_years.empty:
-        fig = px.bar(df_years, x='Year', y='Publications')
-        fig.update_layout(
-            xaxis_title="Year",
-            yaxis_title="Number of Publications",
-            showlegend=False
+    # Publications by year
+    if 'year' in sources_df.columns:
+        year_counts = sources_df['year'].value_counts().sort_index()
+        if not year_counts.empty:
+            fig = px.bar(
+                x=year_counts.index,
+                y=year_counts.values,
+                labels={'x': 'Year', 'y': 'Number of Sources'},
+                title="Publications by Year"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Data table
+    st.subheader("Sources")
+
+    # Search filter
+    search = st.text_input("Search sources", placeholder="Filter by title, authors...")
+    if search:
+        mask = (
+            sources_df['title'].str.contains(search, case=False, na=False) |
+            sources_df['authors'].str.contains(search, case=False, na=False)
         )
-        st.plotly_chart(fig, use_container_width=True)
+        display_df = sources_df[mask]
     else:
-        st.info("No publication year data available for the current selection")
+        display_df = sources_df
 
-    # Top venues
-    st.subheader("Top Publication Venues")
-    venue_counts = papers_df['venue'].value_counts().head(10)
-    df_venues = pd.DataFrame({
-        'Venue': venue_counts.index,
-        'Publications': venue_counts.values
-    }).reset_index(drop=True)
+    # Bulk selection
+    st.markdown("**Select sources for bulk operations:**")
 
-    if not df_venues.empty:
-        fig = px.bar(df_venues, x='Publications', y='Venue', orientation='h')
-        fig.update_layout(
-            xaxis_title="Number of Publications",
-            yaxis_title="",
-            showlegend=False
+    # Initialize selection state
+    if 'selected_sources' not in st.session_state:
+        st.session_state.selected_sources = set()
+
+    # Select all / deselect all
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("Select All"):
+            st.session_state.selected_sources = set(display_df['id'].tolist())
+            st.rerun()
+    with col2:
+        if st.button("Deselect All"):
+            st.session_state.selected_sources = set()
+            st.rerun()
+
+    # Display sources with checkboxes and detail view
+    for _, row in display_df.iterrows():
+        source_id = row['id']
+        col1, col2 = st.columns([0.05, 0.95])
+
+        with col1:
+            selected = st.checkbox(
+                "",
+                value=source_id in st.session_state.selected_sources,
+                key=f"select_source_{source_id}",
+                label_visibility="collapsed"
+            )
+            if selected and source_id not in st.session_state.selected_sources:
+                st.session_state.selected_sources.add(source_id)
+            elif not selected and source_id in st.session_state.selected_sources:
+                st.session_state.selected_sources.discard(source_id)
+
+        with col2:
+            title = row['title'][:70] + '...' if len(row.get('title') or '') > 70 else row.get('title', 'Untitled')
+            with st.expander(f"**{title}** ({row.get('year', 'N/A')})"):
+                # Get full details
+                details = get_source_details(source_id)
+                if details:
+                    st.write(f"**Authors:** {details.get('authors') or 'N/A'}")
+                    st.write(f"**Publication:** {details.get('publication') or 'N/A'}")
+                    st.write(f"**Type:** {details.get('source_type') or 'N/A'}")
+                    st.write(f"**Source:** {details.get('import_source') or 'N/A'}")
+
+                    if details.get('identifier'):
+                        id_type = details.get('identifier_type', 'unknown')
+                        if id_type == 'doi':
+                            st.write(f"**DOI:** [{details['identifier']}](https://doi.org/{details['identifier']})")
+                        else:
+                            st.write(f"**ID:** {details['identifier']} ({id_type})")
+
+                    if details.get('keywords'):
+                        st.write(f"**Keywords:** {', '.join(details['keywords'])}")
+
+                    if details.get('abstract'):
+                        st.write("**Abstract:**")
+                        st.markdown(details['abstract'])
+
+                    if details.get('content'):
+                        with st.expander("Full Content"):
+                            st.text(details['content'][:5000] + ('...' if len(details['content']) > 5000 else ''))
+
+    # Bulk operations
+    selected_count = len(st.session_state.selected_sources)
+    if selected_count > 0:
+        st.divider()
+        st.subheader(f"Bulk Operations ({selected_count} selected)")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            # Add to project (for global view)
+            if not project_id:
+                projects_df = load_projects()
+                if not projects_df.empty:
+                    target_project = st.selectbox(
+                        "Add to project:",
+                        options=projects_df['id'].tolist(),
+                        format_func=lambda x: projects_df[projects_df['id'] == x]['name'].iloc[0]
+                    )
+                    if st.button("Add to Project"):
+                        bulk_add_sources_to_project(list(st.session_state.selected_sources), target_project)
+                        st.success(f"Added {selected_count} sources to project")
+                        st.rerun()
+
+        with col2:
+            # Remove from project (if viewing a project)
+            if project_id:
+                if st.button("Remove from Project"):
+                    bulk_remove_sources_from_project(list(st.session_state.selected_sources), project_id)
+                    st.session_state.selected_sources = set()
+                    st.success(f"Removed {selected_count} sources from project")
+                    st.rerun()
+
+        with col3:
+            # Delete permanently
+            if st.button("Delete Selected", type="secondary"):
+                st.session_state.confirm_delete_sources = True
+
+            if st.session_state.get('confirm_delete_sources', False):
+                st.warning(f"Are you sure you want to permanently delete {selected_count} sources?")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("Yes, Delete"):
+                        for sid in list(st.session_state.selected_sources):
+                            delete_source(sid)
+                        st.session_state.selected_sources = set()
+                        st.session_state.confirm_delete_sources = False
+                        st.success(f"Deleted {selected_count} sources")
+                        st.rerun()
+                with col_b:
+                    if st.button("Cancel"):
+                        st.session_state.confirm_delete_sources = False
+                        st.rerun()
+
+    st.divider()
+
+    # Export
+    if st.button("Export to CSV"):
+        csv = sources_df.to_csv(index=False)
+        st.download_button(
+            "Download CSV",
+            csv,
+            "sources.csv",
+            "text/csv"
         )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No venue data available for the current selection")
-
-    # Publication sources distribution
-    st.subheader("Distribution by Publication Source")
-    source_counts = papers_df['publication_source'].value_counts()
-    df_sources = pd.DataFrame({
-        'Source': source_counts.index,
-        'Count': source_counts.values
-    }).reset_index(drop=True)
-
-    if not df_sources.empty:
-        fig = px.pie(df_sources, values='Count', names='Source')
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No publication source data available for the current selection")
-
-    # Interactive table
-    st.subheader("Papers Database")
-    display_cols = [
-        'title', 'authors', 'publication_year', 'venue',
-        'publication_type', 'publication_source', 'doi', 'volume'
-    ]
-
-    # Create a display dataframe with formatted DOI/arXiv ID
-    display_df = papers_df[display_cols].copy()
-    display_df['ID'] = display_df.apply(
-        lambda row: row['doi'] if pd.notna(row['doi']) else
-        (f"arXiv:{row['volume']}" if pd.notna(row['volume']) and row['publication_source'] == 'arxiv_auto_import' else 'N/A'),
-        axis=1
-    )
-
-    # Reorder columns
-    final_cols = ['title', 'authors', 'publication_year', 'venue', 'publication_type', 'publication_source', 'ID']
-
-    st.dataframe(
-        display_df[final_cols],
-        hide_index=True,
-        use_container_width=True
-    )
 
 
-def add_paper():
-    """
-    Handles the functionality for adding a research paper through a form interface.
-    This function renders a form with fields for paper details like DOI, title, publication
-    year, authors, venue, volume, publication type, and publication source. Upon form
-    submission, it validates the required fields and inserts the data into a database.
+def display_add_source_tab(project_id: int = None):
+    """Form to manually add a source."""
+    st.title("Add Source")
 
-    Raises:
-        sqlite3.IntegrityError: If a paper with the given DOI already exists in the database.
-        Exception: If there is any error during the database operation.
+    if project_id:
+        project = get_project(project_id)
+        if project:
+            st.caption(f"Adding to project: **{project['name']}**")
 
-    Parameters:
-        None
-
-    Returns:
-        None
-    """
-    st.title("Add Paper")
-
-    # Form for paper details
-    with st.form("paper_form"):
-        doi = st.text_input("DOI", help="Digital Object Identifier (optional for preprints)")
-        title = st.text_input("Title*", help="Paper title (required)")
-        year = st.number_input("Publication Year*", min_value=1900, max_value=2100, value=2024)
-        authors = st.text_input("Authors*", help="Comma-separated list of authors")
-        venue = st.text_input("Venue", help="Journal or conference name")
-        volume = st.text_input("Volume/arXiv ID", help="Volume number or arXiv identifier")
-        publication_type = st.selectbox(
-            "Publication Type",
-            ["journal_article", "conference_paper", "preprint", "technical_report", "thesis_dissertation", "other"]
+    with st.form("add_source_form"):
+        title = st.text_input("Title*", help="Required")
+        authors = st.text_input("Authors", help="Comma-separated")
+        year = st.number_input("Publication Year", min_value=1900, max_value=2100, value=2024)
+        publication = st.text_input("Publication/Venue")
+        doi = st.text_input("DOI")
+        source_type = st.selectbox(
+            "Source Type",
+            ["journal", "conference", "preprint", "book", "thesis", "web", "other"]
         )
-        publication_source = st.text_input("Publication Source", help="Where this paper was found")
 
-        submitted = st.form_submit_button("Add Paper")
+        submitted = st.form_submit_button("Add Source")
 
         if submitted:
-            if not all([title, authors]):
-                st.error("Please fill in all required fields (marked with *)")
+            if not title:
+                st.error("Title is required")
                 return
 
             conn = get_connection()
             cursor = conn.cursor()
 
             try:
+                # Determine identifier
+                if doi:
+                    identifier = doi.strip()
+                    identifier_type = 'doi'
+                else:
+                    import hashlib
+                    content = f"{title.lower().strip()}|{authors.lower().strip()}|{year}"
+                    identifier = hashlib.sha256(content.encode()).hexdigest()[:16]
+                    identifier_type = 'hash'
+
                 cursor.execute("""
-                               INSERT INTO papers
-                               (doi, title, publication_year, authors, venue, volume, publication_type, publication_source)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                               """, (
-                                   doi or None,  # Use None for NULL instead of empty string
-                                   title,
-                                   year,
-                                   authors,
-                                   venue,
-                                   volume,
-                                   publication_type,
-                                   publication_source
-                               ))
-
+                    INSERT INTO sources (identifier, identifier_type, title, authors, year,
+                                        publication, source_type, import_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (identifier, identifier_type, title, authors, year, publication,
+                      source_type, 'manual'))
                 conn.commit()
-                st.success("Paper added successfully!")
+
+                source_id = cursor.lastrowid
+
+                # Link to project if one is selected
+                if project_id:
+                    cursor.execute(
+                        "INSERT INTO project_sources (project_id, source_id) VALUES (?, ?)",
+                        (project_id, source_id)
+                    )
+                    conn.commit()
+
+                st.success(f"Added: {title}")
+
             except sqlite3.IntegrityError:
-                st.error("A paper with this DOI already exists in the database")
+                st.error("A source with this identifier already exists")
             except Exception as e:
-                st.error(f"Error adding paper: {str(e)}")
-            finally:
-                conn.close()
+                st.error(f"Error adding source: {e}")
 
 
-def apply_filters(df, filters):
-    """
-    Filters the given dataset according to specified criteria and returns the modified dataset.
+def display_content_matrix_tab(project_id: int = None):
+    """Display the content matrix tab."""
+    st.title("Content Matrix")
 
-    Parameters:
-    df : DataFrame
-        The dataset to be filtered in pandas DataFrame format.
-    filters : dict
-        A dictionary of filtering criteria with the following possible keys:
-            - 'years': List specifying publication years to include.
-            - 'llm_model': A string specifying the LLM model filter. Use "All" for no filter.
-            - 'focus': A string specifying focus filter. Possible values: "All", "Virtual Tutor", "Implementation", or "Unassessed/Other".
-            - 'evaluation': A string specifying evaluation filter. Possible values: "All", "Evaluated", or "Not Evaluated".
-
-    Returns:
-    DataFrame
-        The filtered dataset that meets the specified filter criteria.
-
-    Raises:
-    KeyError
-        If any of the expected keys in the 'filters' dictionary are absent or incorrectly spelled.
-    """
-    filtered_df = df.copy()
-
-    # Debug info before filtering
-    print(f"\nInitial dataset size: {len(filtered_df)}")
-    print(f"Assessment status distribution:\n{filtered_df['assessment_status'].value_counts(dropna=False)}")
-
-    # Handle year filter
-    if filters['years']:
-        filtered_df = filtered_df[filtered_df['publication_year'].isin(filters['years'])]
-        print(f"\nAfter year filter: {len(filtered_df)} papers")
-
-    # Handle LLM model filter
-    if filters['llm_model'] != "All":
-        filtered_df = filtered_df[
-            filtered_df['llm_model'] == filters['llm_model']
-            ]
-        print(f"\nAfter LLM model filter: {len(filtered_df)} papers")
-
-    # Handle focus filter
-    if filters['focus'] != "All":
-        print(f"\nApplying focus filter: {filters['focus']}")
-        if filters['focus'] == "Virtual Tutor":
-            filtered_df = filtered_df[filtered_df['assessment_status'] == 'Virtual Tutor']
-        elif filters['focus'] == "Implementation":
-            filtered_df = filtered_df[
-                (filtered_df['assessment_status'] == 'Virtual Tutor') &
-                (filtered_df['is_implementation'] == True)
-                ]
-        else:  # "Unassessed/Other"
-            filtered_df = filtered_df[filtered_df['assessment_status'].isin(['Unassessed', 'Not Virtual Tutor'])]
-        print(f"After focus filter: {len(filtered_df)} papers")
-        print(f"Assessment status distribution:\n{filtered_df['assessment_status'].value_counts(dropna=False)}")
-
-    # Handle evaluation filter
-    if filters['evaluation'] != "All":
-        if filters['evaluation'] == "Evaluated":
-            filtered_df = filtered_df[
-                filtered_df['empirical_evaluation'].isin(['controlled_experiment', 'pilot_study', 'survey_only'])
-            ]
-        else:
-            filtered_df = filtered_df[
-                (filtered_df['empirical_evaluation'].isin(['no_evaluation', 'not_specified'])) |
-                (filtered_df['empirical_evaluation'].isna())
-                ]
-        print(f"\nAfter evaluation filter: {len(filtered_df)} papers")
-
-    return filtered_df
-
-
-def create_filters(papers_df):
-    """
-    Creates and returns a set of user-selected filters for a dataset of research papers.
-
-    This function provides a user interface using the Streamlit sidebar to create filters
-    based on specific attributes of the input dataset. The resulting filters are then
-    returned in a dictionary for further processing.
-
-    Parameters:
-        papers_df (DataFrame): A pandas DataFrame containing research paper data.
-            The DataFrame is expected to have at least the columns: 'publication_year',
-            'llm_model'.
-
-    Returns:
-        dict: A dictionary where each key represents a filter category (e.g., years,
-            llm_model, focus, evaluation) and the value is the corresponding user-selected
-            filter option(s).
-
-    Raises:
-    """
-    filters = {}
-
-    with st.sidebar:
-        st.header("Filters")
-
-        # Year filter
-        years = sorted(papers_df['publication_year'].dropna().unique(), reverse=True)
-        filters['years'] = st.multiselect(
-            "Publication Years",
-            years,
-            default=years
-        )
-
-        # LLM Model filter
-        llm_models = papers_df['llm_model'].dropna().unique().tolist()
-        llm_models = ["All"] + sorted([model for model in llm_models if pd.notna(model) and model != ''])
-        filters['llm_model'] = st.selectbox(
-            "LLM Model",
-            llm_models
-        )
-
-        # Focus filter - updated labels
-        filters['focus'] = st.radio(
-            "Paper Focus",
-            ["All", "Virtual Tutor", "Implementation", "Unassessed/Other"],
-            help="""
-            - All: Show all papers
-            - Virtual Tutor: Papers about virtual tutors (theoretical or implementation)
-            - Implementation: Only papers with actual implementations
-            - Unassessed/Other: Papers that haven't been assessed or are not about virtual tutors
-            """
-        )
-
-        # Evaluation filter
-        filters['evaluation'] = st.radio(
-            "Empirical Evaluation",
-            ["All", "Evaluated", "Not Evaluated"]
-        )
-
-    return filters
-
-
-def display_assessments_tab(papers_df, filters):
-    """
-    Displays the Virtual Tutor Assessments tab with summary statistics, applied filters,
-    and graphical insights based on the provided data.
-
-    Parameters:
-        papers_df (DataFrame): The dataframe containing information about papers.
-        filters (dict): A dictionary containing filter conditions to apply on the dataframe.
-
-    Raises:
-        KeyError: If the expected column names such as 'is_virtual_tutor',
-                  'is_implementation', 'llm_model', 'primary_function', or
-                  'empirical_evaluation' are missing in the dataframe.
-
-    Returns:
-        None
-    """
-    st.title("Virtual Tutor Assessments")
-
-    filtered_df = apply_filters(papers_df, filters)
-
-    # Basic statistics with filtered data
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric(
-            "Total Papers",
-            len(filtered_df),
-            delta=f"{len(filtered_df) - len(papers_df)} from total"
-        )
-    with col2:
-        if 'is_virtual_tutor' in filtered_df.columns:
-            vt_count = len(filtered_df[filtered_df['is_virtual_tutor'] == True])
-            st.metric("Virtual Tutor Papers", vt_count)
-        else:
-            st.metric("Virtual Tutor Papers", "N/A")
-    with col3:
-        if 'is_implementation' in filtered_df.columns:
-            impl_count = len(filtered_df[filtered_df['is_implementation'] == True])
-            st.metric("Implementation Papers", impl_count)
-        else:
-            st.metric("Implementation Papers", "N/A")
-
-    # Convert to regular Python types for JSON serialization
-    filtered_data = filtered_df.to_dict(orient='records')
-    filters_json = {k: [int(x) if isinstance(x, np.integer) else x for x in v]
-    if isinstance(v, (list, np.ndarray)) else v
-                    for k, v in filters.items()}
-
-    # Additional visualizations
-    st.subheader("Key Insights")
-
-    with st.expander("LLM Model Distribution"):
-        if 'llm_model' in filtered_df.columns:
-            model_counts = filtered_df['llm_model'].value_counts()
-            if not model_counts.empty:
-                fig = px.pie(
-                    values=model_counts.values,
-                    names=model_counts.index,
-                    title="Distribution of LLM Models Used"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.write("No LLM model information available.")
-        else:
-            st.write("LLM model information not available.")
-
-    with st.expander("Primary Functions"):
-        if 'primary_function' in filtered_df.columns:
-            function_counts = filtered_df['primary_function'].value_counts()
-            if not function_counts.empty:
-                fig = px.bar(
-                    x=function_counts.values,
-                    y=function_counts.index,
-                    orientation='h',
-                    title="Primary Functions of Virtual Tutors"
-                )
-                fig.update_layout(yaxis_title="Function", xaxis_title="Number of Papers")
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.write("No primary function information available.")
-        else:
-            st.write("Primary function information not available.")
-
-    with st.expander("Evaluation Types"):
-        if 'empirical_evaluation' in filtered_df.columns:
-            eval_counts = filtered_df['empirical_evaluation'].value_counts()
-            if not eval_counts.empty:
-                fig = px.bar(
-                    x=eval_counts.index,
-                    y=eval_counts.values,
-                    title="Types of Empirical Evaluations"
-                )
-                fig.update_layout(xaxis_title="Evaluation Type", yaxis_title="Number of Papers")
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.write("No evaluation information available.")
-        else:
-            st.write("Evaluation information not available.")
-
-
-@st.cache_data
-def load_keyword_data():
-    """
-    Caches and loads keyword data by executing a SQL query.
-
-    This function establishes a connection to the database, executes the SQL query
-    to fetch information related to keywords, papers, and their relationships, and
-    returns the data as a Pandas DataFrame. It utilizes `st.cache_data` for caching
-    to avoid redundant database calls and improve performance.
-
-    Returns:
-        pd.DataFrame: A DataFrame containing keyword, paper, and virtual tutor
-                      assessment data.
-
-    Raises:
-        Any potential exceptions raised during the database connection or query
-        execution process.
-    """
-    conn = get_connection()
-    query = """
-            SELECT
-                k.keyword,
-                k.id as keyword_id,
-                p.publication_year,
-                p.id as paper_id,
-                p.publication_source,
-                pa.llm_model,
-                pa.is_virtual_tutor,
-                pa.is_implementation
-            FROM keywords k
-                     JOIN rel_keywords_papers r ON k.id = r.keyword_id
-                     JOIN papers p ON r.paper_id = p.id
-                     LEFT JOIN virtual_tutor_assessments pa ON p.id = pa.paper_id \
-            """
-    return pd.read_sql_query(query, conn)
-
-
-@st.cache_data
-def process_keyword_network(df, max_nodes=30):
-    """
-    Processes a keyword network from a given DataFrame, limiting the size of the network
-    by the top keywords and generating a co-occurrence matrix of keywords.
-
-    Parameters:
-    df: DataFrame
-        The input DataFrame containing at least a 'keyword' column and a 'paper_id' column.
-    max_nodes: int, optional
-        The maximum number of top keywords to include in the network. Default is 30.
-
-    Returns:
-    DataFrame
-        A DataFrame representing the co-occurrence matrix with columns 'source', 'target',
-        and 'weight', where 'source' and 'target' are keywords, and 'weight' is the
-        frequency of their co-occurrence.
-
-    Raises:
-    KeyError
-        If the required columns 'keyword' or 'paper_id' are missing in the input DataFrame.
-
-    """
-    # Get top keywords first to limit network size
-    top_keywords = df['keyword'].value_counts().head(max_nodes).index
-    df_filtered = df[df['keyword'].isin(top_keywords)]
-
-    # Create co-occurrence matrix
-    paper_keyword_groups = df_filtered.groupby('paper_id')['keyword'].agg(list)
-    keyword_pairs = []
-
-    for keywords in paper_keyword_groups:
-        if len(keywords) > 1:  # Only process if there are at least 2 keywords
-            for i in range(len(keywords)):
-                for j in range(i + 1, len(keywords)):
-                    keyword_pairs.append(tuple(sorted([keywords[i], keywords[j]])))
-
-    # Count co-occurrences
-    co_occurrences = pd.DataFrame(
-        keyword_pairs,
-        columns=['source', 'target']
-    ).value_counts().reset_index()
-    co_occurrences.columns = ['source', 'target', 'weight']
-
-    return co_occurrences
-
-
-@st.cache_data
-def process_temporal_evolution(df, top_n=10):
-    """
-    Processes the temporal evolution of keywords in a DataFrame by filtering for the
-    top N keywords and grouping data by publication year and keyword to compute the
-    counts.
-
-    Args:
-        df: A pandas DataFrame containing at least 'keyword' and 'publication_year' columns.
-        top_n: An integer indicating the number of top keywords to consider based on
-               their frequency in the DataFrame. Default is 10.
-
-    Returns:
-        A pandas DataFrame with columns ['publication_year', 'keyword', 'count'],
-        where 'count' represents the occurrence of each keyword per year in the
-        input DataFrame.
-    """
-    top_keywords = df['keyword'].value_counts().head(top_n).index
-    mask = df['keyword'].isin(top_keywords)
-    return df[mask].groupby(['publication_year', 'keyword']).size().reset_index(name='count')
-
-
-@st.cache_data
-def process_keyword_frequency(df, top_n=20):
-    """
-    Caches and processes keyword frequencies from a DataFrame by calculating
-    the top N most frequent keywords. The function returns a new DataFrame
-    containing the keywords and their respective frequencies.
-
-    Parameters:
-        df (pd.DataFrame): The input DataFrame containing a column named 'keyword'.
-        top_n (int): Optional. Number of top keywords to extract. Defaults to 20.
-
-    Returns:
-        pd.DataFrame: A DataFrame containing the 'top_n' keywords and their
-        corresponding frequency counts. The first column holds the keywords,
-        and the second column contains their frequencies.
-    """
-    return df['keyword'].value_counts().head(top_n).reset_index()
-
-
-def display_keywords_tab(papers_df, filters):
-    """
-    Displays a tab for analyzing and visualizing keyword data from a collection of academic papers.
-
-    This function provides functionalities to filter and visualize keyword data in three parts:
-    a keyword co-occurrence network, keyword frequency analysis, and temporal evolution of keywords.
-    Additionally, it includes options to adjust visualization parameters and export the processed
-    data for further use.
-
-    Parameters:
-        papers_df (DataFrame): DataFrame containing metadata of the papers.
-        filters (dict): A dictionary of filters to apply to the papers dataset.
-
-    Raises:
-        Warning: If no keyword data is available for the current selection, or if there is insufficient
-                 data to create the visualizations.
-
-    Returns:
-        None
-    """
-    st.title("Keyword Analysis")
-
-    with st.spinner("Loading keyword data..."):
-        keyword_data = load_keyword_data()
-        filtered_df = apply_filters(papers_df, filters)
-        filtered_keywords = keyword_data[
-            keyword_data['paper_id'].isin(filtered_df['id'])
-        ]
-
-    if filtered_keywords.empty:
-        st.warning("No keyword data available for the current selection.")
+    if not project_id:
+        st.warning("Select a project to view its content matrix.")
         return
 
-    # Add controls for visualization parameters
-    with st.expander("Visualization Settings"):
-        col1, col2 = st.columns(2)
-        with col1:
-            max_nodes = st.slider("Max number of keywords in network", 5, 50, 30)
-            top_n_temporal = st.slider("Number of keywords in temporal view", 5, 20, 10)
-        with col2:
-            top_n_freq = st.slider("Number of keywords in frequency view", 5, 50, 20)
-            min_cooccurrence = st.slider("Minimum co-occurrence strength", 1, 10, 2)
-
-    # Create two columns for the top section
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Keyword Co-occurrence Network")
-        with st.spinner("Generating network visualization..."):
-            network_data = process_keyword_network(filtered_keywords, max_nodes)
-            network_data = network_data[network_data['weight'] >= min_cooccurrence]
-
-            if network_data.empty:
-                st.warning("Not enough co-occurring keywords found with current settings.")
-                return
-
-            import networkx as nx
-            G = nx.from_pandas_edgelist(
-                network_data,
-                'source',
-                'target',
-                edge_attr='weight'
-            )
-
-            if len(G.nodes()) > 0:
-                pos = nx.spring_layout(G, k=1/np.sqrt(len(G.nodes())), iterations=50)
-
-                # Create separate traces for each edge with weight-dependent width
-                edge_traces = []
-                for edge in G.edges(data=True):
-                    x0, y0 = pos[edge[0]]
-                    x1, y1 = pos[edge[1]]
-                    weight = edge[2].get('weight', 1)
-
-                    edge_trace = go.Scatter(
-                        x=[x0, x1],
-                        y=[y0, y1],
-                        line=dict(
-                            width=weight/network_data['weight'].max() * 5,
-                            color='#888'
-                        ),
-                        hoverinfo='text',
-                        text=f"Weight: {weight}",
-                        mode='lines'
-                    )
-                    edge_traces.append(edge_trace)
-
-                # Create nodes trace
-                node_x = [pos[node][0] for node in G.nodes()]
-                node_y = [pos[node][1] for node in G.nodes()]
-                node_text = list(G.nodes())
-
-                node_trace = go.Scatter(
-                    x=node_x,
-                    y=node_y,
-                    mode='markers+text',
-                    hoverinfo='text',
-                    text=node_text,
-                    textposition="top center",
-                    marker=dict(
-                        size=10,
-                        color='lightblue',
-                        line_width=2
-                    )
-                )
-
-                # Combine all traces
-                fig = go.Figure(
-                    data=edge_traces + [node_trace],
-                    layout=go.Layout(
-                        showlegend=False,
-                        hovermode='closest',
-                        margin=dict(b=0,l=0,r=0,t=0),
-                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
-                    )
-                )
-
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Not enough connected keywords to create network visualization")
-
-    with col2:
-        st.subheader("Keyword Frequency")
-        with st.spinner("Generating frequency visualization..."):
-            freq_data = process_keyword_frequency(filtered_keywords, top_n_freq)
-            fig = px.bar(
-                freq_data,
-                x='count',
-                y='keyword',
-                orientation='h',
-                title='Most Common Keywords'
-            )
-            fig.update_layout(yaxis={'categoryorder':'total ascending'})
-            st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Temporal Keyword Evolution")
-    with st.spinner("Generating temporal visualization..."):
-        temporal_data = process_temporal_evolution(filtered_keywords, top_n_temporal)
-        fig = px.line(
-            temporal_data,
-            x='publication_year',
-            y='count',
-            color='keyword',
-            title='Keyword Usage Over Time'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Add export functionality
-    st.subheader("Export Data")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        csv = network_data.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "Download Co-occurrence Data",
-            csv,
-            "keyword_network.csv",
-            "text/csv",
-            key='download-network'
-        )
-
-    with col2:
-        csv = temporal_data.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "Download Temporal Data",
-            csv,
-            "keyword_temporal.csv",
-            "text/csv",
-            key='download-temporal'
-        )
-
-    with col3:
-        csv = freq_data.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "Download Frequency Data",
-            csv,
-            "keyword_frequency.csv",
-            "text/csv",
-            key='download-frequency'
-        )
-
-
-def display_analysis_tab(papers_df, filters):
-    """
-    Displays the comprehensive analysis dashboard for the provided dataset,
-    allowing users to explore various analytical perspectives using the available
-    sub-tabs. The function applies specified filters to the data and performs
-    analysis only on assessed papers. Each sub-tab provides a focused representation
-    on a specific aspect of the dataset, ranging from technology insights to
-    implementation contexts.
-
-    Parameters:
-        papers_df (pandas.DataFrame): The dataframe containing data related to
-            papers and their details.
-        filters (dict): A dictionary containing filter criteria to apply to
-            the papers dataframe.
-
-    Raises:
-        Warning: Displays a warning message to the user when no assessed papers
-            are found in the filtered dataset.
-    """
-    st.title("📊 Comprehensive Analysis Dashboard")
-
-    # Apply filters
-    filtered_df = apply_filters(papers_df, filters)
-
-    # Only include assessed papers for most analyses
-    assessed_df = filtered_df[filtered_df['assessment_date'].notna()].copy()
-    vt_df = assessed_df[assessed_df['is_virtual_tutor'] == True].copy()
-
-    if assessed_df.empty:
-        st.warning("No assessed papers found. Please run assessments first.")
+    project = get_project(project_id)
+    if not project:
+        st.error("Project not found.")
         return
 
-    # Create sub-tabs for different analysis types
-    tabs = st.tabs([
-        "📈 Overview",
-        "🤖 LLM Technology",
-        "🏗️ Architecture",
-        "📚 Pedagogical Features",
-        "📊 Evaluation Insights",
-        "🏛️ Implementation Context",
-        "🔒 Privacy & Compliance",
-        "🔍 Comparative Analysis",
-        "🎯 Research Gaps",
-        "📋 Summary Report",
-        "🔢 Assessment Matrix"  # New tab!
-    ])
+    st.caption(f"Content matrix for project: **{project['name']}**")
 
-    with tabs[0]:
-        display_assessment_overview(filtered_df, assessed_df, vt_df)
-
-    with tabs[1]:
-        display_llm_technology_analysis(vt_df)
-
-    with tabs[2]:
-        display_architecture_analysis(vt_df)
-
-    with tabs[3]:
-        display_pedagogical_analysis(vt_df)
-
-    with tabs[4]:
-        display_evaluation_insights(vt_df)
-
-    with tabs[5]:
-        display_implementation_context(vt_df)
-
-    with tabs[6]:
-        display_privacy_compliance(vt_df)
-
-    with tabs[7]:
-        display_comparative_analysis(vt_df)
-
-    with tabs[8]:
-        display_research_gaps(vt_df, assessed_df)
-
-    with tabs[9]:
-        display_summary_report(filtered_df, assessed_df, vt_df)
-
-    with tabs[10]:  # New Assessment Matrix tab
-        display_assessment_matrix(papers_df, vt_df)
-
-
-def display_assessment_overview(all_df, assessed_df, vt_df):
-    """
-    Generates an interactive dashboard for visualizing the assessment overview of research papers.
-
-    Summary:
-        The function creates a dashboard using Streamlit to display key metrics, visualizations,
-        and insights about the assessment process of research papers. It includes metrics related
-        to total papers, assessed papers, virtual tutors, and implementations. Additionally,
-        it presents distributions and trends over time for assessment statuses and publication years.
-
-    Args:
-        all_df (pandas.DataFrame): The DataFrame containing all research papers' data.
-        assessed_df (pandas.DataFrame): The DataFrame containing data of the assessed papers.
-        vt_df (pandas.DataFrame): The DataFrame containing data of virtual tutor papers.
-
-    Raises:
-        None
-
-    Returns:
-        None
-    """
-    st.header("Assessment Overview Dashboard")
-
-    # Key metrics
-    col1, col2, col3, col4 = st.columns(4)
-
-    total_papers = len(all_df)
-    assessed = len(assessed_df)
-    virtual_tutors = len(vt_df)
-    implementations = len(vt_df[vt_df['is_implementation'] == True])
-
-    col1.metric("Assessment Progress",
-                f"{assessed}/{total_papers}",
-                f"{(assessed/total_papers*100):.1f}%" if total_papers > 0 else "0%")
-
-    col2.metric("Virtual Tutors",
-                virtual_tutors,
-                f"{(virtual_tutors/assessed*100):.1f}% of assessed" if assessed > 0 else "0%")
-
-    col3.metric("Implementations",
-                implementations,
-                f"{(implementations/virtual_tutors*100):.1f}% of VT" if virtual_tutors > 0 else "0%")
-
-    col4.metric("Theoretical Papers",
-                virtual_tutors - implementations)
-
-    # Assessment timeline
-    if 'assessment_date' in assessed_df.columns:
-        st.subheader("Assessment Timeline")
-        assessed_df['assessment_date_clean'] = pd.to_datetime(assessed_df['assessment_date'])
-        timeline_df = assessed_df.groupby(assessed_df['assessment_date_clean'].dt.date).size().reset_index()
-        timeline_df.columns = ['Date', 'Papers Assessed']
-
-        fig = px.line(timeline_df, x='Date', y='Papers Assessed',
-                      title="Papers Assessed Over Time", markers=True)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Assessment status distribution
-    col1, col2 = st.columns(2)
-
-    with col1:
-        status_counts = all_df['assessment_status'].value_counts()
-        fig = px.pie(values=status_counts.values, names=status_counts.index,
-                     title="Assessment Status Distribution")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        # Publication year vs assessment status
-        year_status = all_df.groupby(['publication_year', 'assessment_status']).size().reset_index(name='count')
-        fig = px.bar(year_status, x='publication_year', y='count', color='assessment_status',
-                     title="Assessment Status by Publication Year")
-        st.plotly_chart(fig, use_container_width=True)
-
-
-def display_llm_technology_analysis(vt_df):
-    """
-    Analyzes and visualizes data related to large language model (LLM) technology in virtual tutor papers.
-
-    The function provides various visualizations to inspect multiple aspects of the dataset, including:
-    1. A hierarchical sunburst chart to represent the relationship between LLM models, their primary
-       functions, and their subject domains.
-    2. A heatmap to display the deployment status of different LLM models.
-    3. A timeline chart showing the evolution of LLM adoption by year.
-    4. RAG (Retrieval-Augmented Generation) adoption analysis, both at a general level and specifically
-       by LLM model.
-
-    Parameters:
-        vt_df (DataFrame): A pandas DataFrame containing data on virtual tutor papers. It should ideally
-                           include the following columns for complete analysis:
-                           - 'llm_model': Represents the specific LLM used.
-                           - 'primary_function': Describes the primary function of the LLM.
-                           - 'subject_domain': Indicates the subject domain covered by the LLM.
-                           - 'deployment_status': Specifies the deployment status for each LLM.
-                           - 'publication_year': Tracks the year of publication associated with the LLM.
-                           - 'uses_rag': Indicates whether the LLM uses Retrieval-Augmented Generation (RAG).
-
-    Raises:
-        None
-    """
-    st.header("🤖 LLM Technology Analysis")
-
-    if vt_df.empty:
-        st.warning("No virtual tutor papers found.")
+    # Parse project config
+    try:
+        config = ProjectConfig.model_validate_json(project['config'] or '{}')
+    except Exception as e:
+        st.error(f"Invalid project configuration: {e}")
+        st.info("Go to the Projects tab to fix the configuration.")
         return
 
-    # Sunburst chart: LLM Model → Primary Function → Subject Domain
-    st.subheader("LLM Technology Landscape")
-
-    # Check if required columns exist
-    required_cols = ['llm_model', 'primary_function', 'subject_domain']
-    missing_cols = [col for col in required_cols if col not in vt_df.columns]
-
-    if missing_cols:
-        st.warning(f"Missing columns for sunburst chart: {', '.join(missing_cols)}")
-        st.info("This may be because papers haven't been fully assessed yet.")
-    else:
-        # Prepare data for sunburst
-        sunburst_df = vt_df[required_cols].copy()
-        sunburst_df = sunburst_df.dropna()
-
-        if not sunburst_df.empty:
-            fig = px.sunburst(sunburst_df,
-                              path=['llm_model', 'primary_function', 'subject_domain'],
-                              title="Hierarchical View: LLM Model → Function → Domain")
-            fig.update_traces(textinfo="label+percent parent")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No complete data available for sunburst visualization.")
-
-    # Heatmap: LLM Model vs Deployment Status
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if 'deployment_status' in vt_df.columns and 'llm_model' in vt_df.columns:
-            heatmap_df = vt_df[['llm_model', 'deployment_status']].dropna()
-            if not heatmap_df.empty:
-                heatmap_data = pd.crosstab(heatmap_df['llm_model'], heatmap_df['deployment_status'])
-                fig = px.imshow(heatmap_data,
-                                labels=dict(x="Deployment Status", y="LLM Model", color="Count"),
-                                title="LLM Models by Deployment Status",
-                                aspect="auto")
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No deployment status data available.")
-        else:
-            st.info("Deployment status information not available.")
-
-    with col2:
-        # Timeline: Evolution of LLM adoption
-        if 'llm_model' in vt_df.columns:
-            llm_timeline_df = vt_df[['publication_year', 'llm_model']].dropna()
-            if not llm_timeline_df.empty:
-                llm_timeline = llm_timeline_df.groupby(['publication_year', 'llm_model']).size().reset_index(name='count')
-                fig = px.line(llm_timeline, x='publication_year', y='count', color='llm_model',
-                              title="LLM Adoption Timeline", markers=True)
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No LLM timeline data available.")
-        else:
-            st.info("LLM model information not available.")
-
-    # RAG adoption analysis
-    st.subheader("RAG (Retrieval-Augmented Generation) Analysis")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if 'uses_rag' in vt_df.columns:
-            rag_df = vt_df['uses_rag'].dropna()
-            if not rag_df.empty:
-                rag_counts = rag_df.value_counts()
-                fig = px.pie(values=rag_counts.values, names=rag_counts.index,
-                             title="RAG Adoption in Virtual Tutors")
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No RAG usage data available.")
-        else:
-            st.info("RAG information not available.")
-
-    with col2:
-        # RAG usage by LLM model
-        if 'llm_model' in vt_df.columns and 'uses_rag' in vt_df.columns:
-            rag_llm_df = vt_df[['llm_model', 'uses_rag']].dropna()
-            if not rag_llm_df.empty:
-                rag_by_llm = pd.crosstab(rag_llm_df['llm_model'], rag_llm_df['uses_rag'])
-                fig = px.bar(rag_by_llm.T, title="RAG Usage by LLM Model", barmode='group')
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No RAG by LLM model data available.")
-        else:
-            st.info("Insufficient data for RAG by LLM analysis.")
-
-
-def display_architecture_analysis(vt_df):
-    """
-    Analyzes and visualizes insights related to technical architecture, LMS integration, interaction
-    modalities, and analytics features from a given DataFrame.
-
-    Summary:
-    The function generates interactive visualizations using Streamlit and Plotly to provide an analysis
-    of the technical architecture, LMS integration patterns, interaction modalities, and learning
-    analytics features. It processes and displays data in various formats, such as bar charts and pie
-    charts, to enable better understanding of the data distribution.
-
-    Args:
-        vt_df (pd.DataFrame): A Pandas DataFrame containing columns such as 'lms_integration',
-        'architecture_components', 'interaction_modality', and 'analytics_features'.
-
-    Raises:
-        KeyError: If the expected columns do not exist in the given DataFrame.
-    """
-    st.header("🏗️ Technical Architecture Analysis")
-
-    # LMS Integration distribution
-    st.subheader("LMS Integration Patterns")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if 'lms_integration' in vt_df.columns:
-            lms_counts = vt_df['lms_integration'].value_counts()
-            fig = px.bar(x=lms_counts.values, y=lms_counts.index, orientation='h',
-                         title="LMS Integration Types")
-            st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        # Architecture components analysis
-        if 'architecture_components' in vt_df.columns:
-            # Split comma-separated values and count
-            all_components = []
-            for components in vt_df['architecture_components'].dropna():
-                if components:
-                    all_components.extend([c.strip() for c in components.split(',')])
-
-            if all_components:
-                component_counts = pd.Series(all_components).value_counts()
-                fig = px.bar(x=component_counts.values, y=component_counts.index,
-                             orientation='h', title="Architecture Components Frequency")
-                st.plotly_chart(fig, use_container_width=True)
-
-    # Interaction modalities
-    st.subheader("Interaction Modalities")
-    if 'interaction_modality' in vt_df.columns:
-        # Process interaction modalities
-        all_modalities = []
-        for modalities in vt_df['interaction_modality'].dropna():
-            if modalities:
-                all_modalities.extend([m.strip() for m in modalities.split(',')])
-
-        if all_modalities:
-            modality_counts = pd.Series(all_modalities).value_counts()
-            fig = px.pie(values=modality_counts.values, names=modality_counts.index,
-                         title="Distribution of Interaction Modalities")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # Analytics features
-    st.subheader("Learning Analytics Features")
-    if 'analytics_features' in vt_df.columns:
-        all_analytics = []
-        for features in vt_df['analytics_features'].dropna():
-            if features and features != 'none_mentioned':
-                all_analytics.extend([f.strip() for f in features.split(',')])
-
-        if all_analytics:
-            analytics_counts = pd.Series(all_analytics).value_counts()
-            fig = px.bar(analytics_counts, orientation='h',
-                         title="Analytics Features Implementation",
-                         labels={'value': 'Count', 'index': 'Feature'})
-            st.plotly_chart(fig, use_container_width=True)
-
-
-def display_pedagogical_analysis(vt_df):
-    """
-    Analyzes and visualizes pedagogical features, personalization, and collaboration data from a dataframe.
-
-    This function generates various visualizations including heatmaps for pedagogical features implementation,
-    bar and pie charts for feature frequency, personalization approaches, collaboration support, and types of
-    collaboration supported. The analysis is dependent on specific columns being present in the input dataframe.
-
-    Parameters:
-    vt_df : pandas.DataFrame
-        DataFrame containing columns related to pedagogical features, personalization, collaboration support,
-        and collaboration types for analysis.
-
-    Raises:
-    ValueError
-        If the input DataFrame does not contain required columns for the analysis.
-
-    Notes:
-    - Expects columns like 'pedagogical_features', 'title', 'personalization', 'supports_collaboration',
-      and 'collaboration_types' to be present in the DataFrame, if the analysis of corresponding data is desired.
-    - Displays heatmap and bar chart for pedagogical features only if the feature_data matrix includes a manageable
-      number of papers (<=20).
-    - Generates visualizations using Plotly and displays them via Streamlit components.
-    """
-    st.header("📚 Pedagogical Features Analysis")
-
-    # Pedagogical features heatmap
-    st.subheader("Pedagogical Features Implementation")
-
-    if 'pedagogical_features' in vt_df.columns:
-        # Create a matrix of papers vs features
-        feature_matrix = []
-        paper_titles = []
-
-        for idx, row in vt_df.iterrows():
-            if pd.notna(row['pedagogical_features']) and row['pedagogical_features']:
-                features = [f.strip() for f in row['pedagogical_features'].split(',')]
-                feature_matrix.append(features)
-                paper_titles.append(row['title'][:50] + '...' if len(row['title']) > 50 else row['title'])
-
-        if feature_matrix:
-            # Get all unique features
-            all_features = set()
-            for features in feature_matrix:
-                all_features.update(features)
-            all_features = sorted(list(all_features))
-
-            # Create binary matrix
-            matrix_data = []
-            for features in feature_matrix:
-                row = [1 if f in features else 0 for f in all_features]
-                matrix_data.append(row)
-
-            if len(paper_titles) <= 20:  # Only show heatmap for reasonable number of papers
-                df_matrix = pd.DataFrame(matrix_data, index=paper_titles, columns=all_features)
-                fig = px.imshow(df_matrix,
-                                labels=dict(x="Features", y="Papers", color="Implemented"),
-                                title="Pedagogical Features by Paper",
-                                aspect="auto",
-                                color_continuous_scale="Blues")
-                st.plotly_chart(fig, use_container_width=True)
-
-            # Feature frequency
-            feature_counts = pd.Series([f for features in feature_matrix for f in features]).value_counts()
-            fig = px.bar(x=feature_counts.values, y=feature_counts.index, orientation='h',
-                         title="Pedagogical Features Frequency")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # Personalization and collaboration analysis
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if 'personalization' in vt_df.columns:
-            personal_counts = vt_df['personalization'].value_counts()
-            fig = px.pie(values=personal_counts.values, names=personal_counts.index,
-                         title="Personalization Approaches")
-            st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        if 'supports_collaboration' in vt_df.columns:
-            collab_counts = vt_df['supports_collaboration'].value_counts()
-            fig = px.pie(values=collab_counts.values, names=collab_counts.index,
-                         title="Collaboration Support")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # Collaboration types
-    if 'collaboration_types' in vt_df.columns:
-        all_collab_types = []
-        for types in vt_df['collaboration_types'].dropna():
-            if types:
-                all_collab_types.extend([t.strip() for t in types.split(',')])
-
-        if all_collab_types:
-            collab_type_counts = pd.Series(all_collab_types).value_counts()
-            fig = px.bar(collab_type_counts, orientation='h',
-                         title="Types of Collaboration Supported",
-                         labels={'value': 'Count', 'index': 'Collaboration Type'})
-            st.plotly_chart(fig, use_container_width=True)
-
-
-def display_evaluation_insights(vt_df):
-    """
-    Displays evaluation insights using interactive visualizations. The function provides an overview of
-    empirical evaluation distribution, sample size statistics, and key evaluation characteristics
-    while analyzing aspects evaluated in studies. Visualizations include pie charts, bar plots, bubble
-    charts, and horizontal bar charts to illustrate the distributions and relationships within the
-    evaluation data.
-
-    Parameters:
-    vt_df (pd.DataFrame): A pandas DataFrame containing evaluation data. The DataFrame must include
-                          columns such as 'empirical_evaluation', 'sample_size', 'evaluation_duration',
-                          and 'aspects_evaluated', depending on the type of analysis to be performed.
-
-    Raises:
-    TypeError: If the `vt_df` parameter is not a pandas DataFrame.
-    ValueError: If required columns for the visualizations are missing in the input DataFrame.
-    """
-    st.header("📊 Evaluation Insights")
-
-    # Evaluation overview
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if 'empirical_evaluation' in vt_df.columns:
-            eval_counts = vt_df['empirical_evaluation'].value_counts()
-            fig = px.pie(values=eval_counts.values, names=eval_counts.index,
-                         title="Types of Empirical Evaluation")
-            st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        # Sample size distribution
-        if 'sample_size' in vt_df.columns:
-            sample_counts = vt_df['sample_size'].value_counts()
-            fig = px.bar(x=sample_counts.index, y=sample_counts.values,
-                         title="Sample Size Distribution")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # Bubble chart: Sample size vs Duration vs Aspects evaluated
-    st.subheader("Evaluation Characteristics")
-
-    eval_df = vt_df[['empirical_evaluation', 'sample_size', 'evaluation_duration', 'aspects_evaluated']].copy()
-    eval_df = eval_df[eval_df['empirical_evaluation'] != 'no_evaluation'].dropna(subset=['sample_size'])
-
-    if not eval_df.empty:
-        # Map categorical values to numeric for visualization
-        size_map = {'less_than_50': 25, '50_to_200': 125, '201_to_500': 350, 'more_than_500': 750}
-        duration_map = {'single_session': 1, 'less_than_month': 15, 'one_semester': 120,
-                        'multiple_semesters': 240, 'longitudinal': 365}
-
-        eval_df['size_numeric'] = eval_df['sample_size'].map(size_map)
-        eval_df['duration_numeric'] = eval_df['evaluation_duration'].map(duration_map)
-
-        # Count aspects evaluated
-        eval_df['aspect_count'] = eval_df['aspects_evaluated'].apply(
-            lambda x: len(x.split(',')) if pd.notna(x) else 0
-        )
-
-        fig = px.scatter(eval_df, x='duration_numeric', y='size_numeric',
-                         size='aspect_count', color='empirical_evaluation',
-                         hover_data=['sample_size', 'evaluation_duration'],
-                         labels={'duration_numeric': 'Duration (days)',
-                                 'size_numeric': 'Sample Size',
-                                 'aspect_count': 'Aspects Evaluated'},
-                         title="Evaluation Scope: Duration vs Sample Size vs Aspects")
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Aspects evaluated
-    st.subheader("Aspects Evaluated in Studies")
-    if 'aspects_evaluated' in vt_df.columns:
-        all_aspects = []
-        for aspects in vt_df['aspects_evaluated'].dropna():
-            if aspects and aspects != 'not_applicable':
-                all_aspects.extend([a.strip() for a in aspects.split(',')])
-
-        if all_aspects:
-            aspect_counts = pd.Series(all_aspects).value_counts()
-            fig = px.bar(x=aspect_counts.values, y=aspect_counts.index, orientation='h',
-                         title="Frequency of Evaluated Aspects")
-            st.plotly_chart(fig, use_container_width=True)
-
-
-def display_implementation_context(vt_df):
-    """
-    Displays information on the implementation context of the provided data, focusing on institution
-    types, development approaches, language support, and publication venue regions. Generates graphical
-    representations for better comprehension of the implementation-related data.
-
-    Args:
-        vt_df (DataFrame): Input DataFrame containing data related to research papers which includes
-            columns like 'is_implementation', 'institution_type', 'development_approach',
-            'language_support', and 'venue'.
-
-    Raises:
-        None
-
-    Returns:
-        None
-    """
-    st.header("🏛️ Implementation Context")
-
-    impl_df = vt_df[vt_df['is_implementation'] == True].copy()
-
-    if impl_df.empty:
-        st.warning("No implementation papers found.")
+    if not config.questions:
+        st.warning("No questions configured for this project.")
+        st.info("Go to the Projects tab to add questions to the configuration.")
         return
 
-    # Institution types
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if 'institution_type' in impl_df.columns:
-            inst_counts = impl_df['institution_type'].value_counts()
-            fig = px.pie(values=inst_counts.values, names=inst_counts.index,
-                         title="Institution Types")
-            st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        # Development approach
-        if 'development_approach' in impl_df.columns:
-            dev_counts = impl_df['development_approach'].value_counts()
-            fig = px.bar(x=dev_counts.values, y=dev_counts.index, orientation='h',
-                         title="Development Approaches")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # Language support analysis
-    st.subheader("Language Support")
-    if 'language_support' in impl_df.columns:
-        lang_counts = impl_df['language_support'].value_counts()
-        fig = px.bar(lang_counts, title="Language Support Distribution",
-                     labels={'value': 'Count', 'index': 'Language Support'})
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Geographic distribution (if venue data provides hints)
-    st.subheader("Publication Venues by Region")
-    # This is a simplified analysis based on venue names
-    venue_regions = {
-        'german': ['TU', 'Universität', 'Hochschule', 'FH', 'RWTH', 'LMU'],
-        'us': ['MIT', 'Stanford', 'Berkeley', 'CMU', 'Georgia Tech'],
-        'uk': ['Oxford', 'Cambridge', 'Imperial', 'UCL'],
-        'other': []
-    }
-
-    def classify_region(venue):
-        """
-        Classifies a venue into predefined regions based on matching keywords.
-
-        The function processes a venue string to determine its corresponding region
-        by comparing it against a dictionary of region keywords. If the venue is not
-        specified (NaN), it classifies the venue as 'Unknown'. If the venue does not
-        match any keywords for the predefined regions, it returns 'Other'.
-
-        Parameters:
-            venue (str): The name of the venue to classify.
-
-        Returns:
-            str: The classified region in uppercase ('UNKNOWN' for NaN venues,
-            'OTHER' for no matches, or a specific region name).
-        """
-        if pd.isna(venue):
-            return 'Unknown'
-        venue_lower = venue.lower()
-        for region, keywords in venue_regions.items():
-            if any(keyword.lower() in venue_lower for keyword in keywords):
-                return region.upper()
-        return 'Other'
-
-    impl_df['region'] = impl_df['venue'].apply(classify_region)
-    region_counts = impl_df['region'].value_counts()
-
-    fig = px.pie(values=region_counts.values, names=region_counts.index,
-                 title="Approximate Regional Distribution (based on venue)")
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def display_privacy_compliance(vt_df):
-    """
-    Displays analysis related to privacy and compliance based on provided data. The function
-    uses the data to generate and render visualizations for privacy protection measures, cost/resource
-    requirements, privacy protection mentions over time, and reference architecture adoption.
-
-    Parameters:
-    vt_df : pd.DataFrame
-        A pandas DataFrame containing columns required for privacy and compliance analysis.
-        The relevant columns include 'privacy_protection', 'cost_requirements', 'publication_year',
-        and 'reference_architecture'. The presence of these columns impacts the visualizations generated.
-
-    Raises:
-    st.errors.UsageError
-        If the function is used without a Streamlit server running in the environment.
-    """
-    st.header("🔒 Privacy & Compliance Analysis")
-
-    # Privacy protection overview
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if 'privacy_protection' in vt_df.columns:
-            privacy_counts = vt_df['privacy_protection'].value_counts()
-            fig = px.pie(values=privacy_counts.values, names=privacy_counts.index,
-                         title="Privacy Protection Measures")
-            st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        # Cost requirements
-        if 'cost_requirements' in vt_df.columns:
-            cost_counts = vt_df['cost_requirements'].value_counts()
-            fig = px.bar(x=cost_counts.values, y=cost_counts.index, orientation='h',
-                         title="Cost/Resource Requirements")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # GDPR compliance timeline
-    st.subheader("Privacy Awareness Over Time")
-    if 'privacy_protection' in vt_df.columns and 'publication_year' in vt_df.columns:
-        privacy_timeline = pd.crosstab(vt_df['publication_year'], vt_df['privacy_protection'])
-        fig = px.bar(privacy_timeline.T, title="Privacy Protection Mentions by Year",
-                     barmode='stack')
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Reference architecture usage
-    st.subheader("Reference Architecture Adoption")
-    if 'reference_architecture' in vt_df.columns:
-        ref_arch_counts = vt_df['reference_architecture'].value_counts()
-        fig = px.pie(values=ref_arch_counts.values, names=ref_arch_counts.index,
-                     title="Use of Reference Architectures")
-        st.plotly_chart(fig, use_container_width=True)
-
-
-def display_comparative_analysis(vt_df):
-    """
-    Displays a comparative analysis of virtual tutor (VT) features.
-
-    This function provides insights into VT feature comparisons by allowing users
-    to select specific papers for comparison and analyze co-occurring features.
-    It includes two main sections: a feature comparison matrix and a feature
-    co-occurrence analysis. The feature comparison matrix enables the selection of
-    a maximum of five papers from the input dataset and presents their key
-    features side-by-side for comparison. Users can also download the comparison
-    data as a CSV file. The feature co-occurrence analysis visualizes the
-    relationships between common feature pairings across the dataset using a
-    network graph.
-
-    Parameters:
-        vt_df (pd.DataFrame): The input dataset containing virtual tutor feature
-                              information. This dataset must include necessary
-                              features such as 'title', 'llm_model', 'uses_rag',
-                              'primary_function', and other predefined attributes.
-
-    Raises:
-        ValueError: If any necessary feature is missing from the input dataframe.
-
-    """
-    st.header("🔍 Comparative Analysis")
-
-    # Feature comparison matrix
-    st.subheader("Virtual Tutor Feature Comparison")
-
-    # Select papers to compare
-    paper_titles = vt_df['title'].tolist()
-    if len(paper_titles) > 1:
-        selected_papers = st.multiselect(
-            "Select papers to compare (max 5):",
-            paper_titles,
-            default=paper_titles[:min(3, len(paper_titles))],
-            max_selections=5
-        )
-
-        if selected_papers:
-            comparison_df = vt_df[vt_df['title'].isin(selected_papers)].copy()
-
-            # Create comparison matrix
-            features_to_compare = [
-                'llm_model', 'uses_rag', 'primary_function', 'subject_domain',
-                'lms_integration', 'personalization', 'supports_collaboration',
-                'empirical_evaluation', 'sample_size', 'privacy_protection'
-            ]
-
-            comparison_data = []
-            for _, paper in comparison_df.iterrows():
-                row_data = {'Title': paper['title'][:50] + '...'}
-                for feature in features_to_compare:
-                    if feature in paper:
-                        row_data[feature.replace('_', ' ').title()] = paper[feature]
-                comparison_data.append(row_data)
-
-            comparison_table = pd.DataFrame(comparison_data)
-            st.dataframe(comparison_table.set_index('Title'), use_container_width=True)
-
-            # Download comparison
-            csv = comparison_table.to_csv(index=False)
-            st.download_button(
-                "Download Comparison CSV",
-                csv,
-                "vt_comparison.csv",
-                "text/csv"
-            )
-
-    # Feature co-occurrence analysis
-    st.subheader("Feature Co-occurrence Analysis")
-
-    # Analyze which features often appear together
-    feature_pairs = []
-
-    for _, row in vt_df.iterrows():
-        # Check pairs of binary features
-        binary_features = {
-            'uses_rag': row.get('uses_rag') == 'yes',
-            'generates_assessments': row.get('generates_assessments') == 'yes',
-            'supports_collaboration': row.get('supports_collaboration') == 'yes',
-            'has_evaluation': row.get('empirical_evaluation') not in ['no_evaluation', 'not_specified'],
-            'is_implementation': row.get('is_implementation') == True
-        }
-
-        feature_names = list(binary_features.keys())
-        for i in range(len(feature_names)):
-            for j in range(i+1, len(feature_names)):
-                if binary_features[feature_names[i]] and binary_features[feature_names[j]]:
-                    feature_pairs.append((feature_names[i], feature_names[j]))
-
-    if feature_pairs:
-        pair_counts = pd.Series(feature_pairs).value_counts()
-
-        # Create network visualization
-        G = nx.Graph()
-        for (f1, f2), count in pair_counts.items():
-            if count > 1:  # Only show pairs that occur more than once
-                G.add_edge(f1, f2, weight=count)
-
-        if G.number_of_nodes() > 0:
-            pos = nx.spring_layout(G)
-
-            # Create edge trace
-            edge_trace = []
-            for edge in G.edges(data=True):
-                x0, y0 = pos[edge[0]]
-                x1, y1 = pos[edge[1]]
-                edge_trace.append(go.Scatter(
-                    x=[x0, x1], y=[y0, y1],
-                    line=dict(width=edge[2]['weight'], color='#888'),
-                    hoverinfo='none',
-                    mode='lines'
-                ))
-
-            # Create node trace
-            node_x = [pos[node][0] for node in G.nodes()]
-            node_y = [pos[node][1] for node in G.nodes()]
-
-            node_trace = go.Scatter(
-                x=node_x, y=node_y,
-                mode='markers+text',
-                hoverinfo='text',
-                text=[node.replace('_', ' ').title() for node in G.nodes()],
-                textposition="top center",
-                marker=dict(size=20, color='lightblue', line_width=2)
-            )
-
-            fig = go.Figure(data=edge_trace + [node_trace],
-                            layout=go.Layout(
-                                title="Feature Co-occurrence Network",
-                                showlegend=False,
-                                hovermode='closest',
-                                xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
-                            ))
-            st.plotly_chart(fig, use_container_width=True)
-
-
-def safe_value_counts(df, column, default_message="No data available"):
-    """
-    Computes the value counts for a specified column in a DataFrame, handling cases where the
-    column does not exist or contains no valid data.
-
-    This function ensures safe computation of value counts by first checking if the specified
-    column exists in the DataFrame and has valid data. If the column is not found or the data
-    is not available, it returns None, allowing the caller to handle the result accordingly.
-
-    Args:
-        df (pd.DataFrame): The DataFrame to analyze.
-        column (str): The name of the column whose value counts are to be calculated.
-        default_message (str, optional): A fallback message indicating a lack of data.
-            Default is "No data available".
-
-    Returns:
-        pd.Series or None: The calculated value counts for the specified column. Returns
-        None if the column does not exist or has no valid data.
-    """
-    if column in df.columns:
-        counts = df[column].dropna().value_counts()
-        if not counts.empty:
-            return counts
-    return None
-
-
-def display_research_gaps(vt_df, assessed_df):
-    """
-    Analyzes research gaps in the provided datasets, including under-researched subject domains, missing evaluations,
-    underrepresented LLM models, and implementation rates of key features. Visualizations and summaries are used
-    to highlight these gaps.
-
-    Args:
-        vt_df (DataFrame): A pandas DataFrame containing the full dataset with various research-related fields.
-        assessed_df (DataFrame): A pandas DataFrame containing a subset of the dataset, or an assessment-specific view.
-
-    Raises:
-        KeyError: If required columns for the analysis are not present in the provided DataFrames.
-
-    """
-    st.header("🎯 Research Gap Analysis")
-
-    # Under-researched domains
-    st.subheader("Under-researched Subject Domains")
-    if 'subject_domain' in vt_df.columns:
-        domain_counts = vt_df['subject_domain'].value_counts()
-
-        # Define expected domains
-        all_domains = ['computer_science', 'mathematics', 'natural_sciences',
-                       'engineering', 'languages', 'social_sciences']
-
-        missing_domains = [d for d in all_domains if d not in domain_counts.index]
-        under_researched = domain_counts[domain_counts < 3].index.tolist()
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write("**Missing Domains:**")
-            if missing_domains:
-                for domain in missing_domains:
-                    st.write(f"- {domain.replace('_', ' ').title()}")
-            else:
-                st.write("All major domains have some representation")
-
-        with col2:
-            st.write("**Under-researched Domains (<3 papers):**")
-            if under_researched:
-                for domain in under_researched:
-                    count = domain_counts[domain]
-                    st.write(f"- {domain.replace('_', ' ').title()}: {count} papers")
-            else:
-                st.write("All domains have adequate representation")
-    else:
-        st.info("Subject domain information not available in the dataset.")
-
-    # Missing evaluation types
-    st.subheader("Evaluation Gaps")
-    if 'empirical_evaluation' in vt_df.columns:
-        eval_df = vt_df['empirical_evaluation'].dropna()
-        if not eval_df.empty:
-            no_eval = len(eval_df[eval_df.isin(['no_evaluation', 'not_specified'])])
-            total = len(eval_df)
-
-            if total > 0:
-                st.metric("Papers without Evaluation",
-                          f"{no_eval}/{total}",
-                          f"{(no_eval/total*100):.1f}%")
-
-                # Evaluation type by year
-                eval_year_df = vt_df[['publication_year', 'empirical_evaluation']].dropna()
-                if not eval_year_df.empty:
-                    eval_by_year = pd.crosstab(
-                        eval_year_df['publication_year'],
-                        eval_year_df['empirical_evaluation'] != 'no_evaluation'
-                    )
-
-                    # Handle the case where crosstab only returns one column
-                    if len(eval_by_year.columns) == 1:
-                        # Check which column we have (True or False)
-                        col_value = eval_by_year.columns[0]
-
-                        # Create a DataFrame with both columns
-                        years = eval_by_year.index
-                        if col_value == True:
-                            # We only have "Has Evaluation" data
-                            eval_by_year = pd.DataFrame({
-                                'No Evaluation': 0,
-                                'Has Evaluation': eval_by_year.iloc[:, 0]
-                            }, index=years)
-                        else:
-                            # We only have "No Evaluation" data
-                            eval_by_year = pd.DataFrame({
-                                'No Evaluation': eval_by_year.iloc[:, 0],
-                                'Has Evaluation': 0
-                            }, index=years)
-                    else:
-                        # We have both columns, rename them
-                        eval_by_year.columns = ['No Evaluation', 'Has Evaluation']
-
-                    fig = px.bar(eval_by_year, title="Evaluation Status by Year",
-                                 barmode='stack')
-                    st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No evaluation data available.")
-    else:
-        st.info("Evaluation information not available in the dataset.")
-
-    # LLM model diversity
-    st.subheader("LLM Model Coverage")
-    if 'llm_model' in vt_df.columns:
-        model_df = vt_df['llm_model'].dropna()
-        if not model_df.empty:
-            model_counts = model_df.value_counts()
-
-            # Expected models
-            major_models = ['gpt_35_4', 'claude', 'llama', 'gemini']
-            missing_models = [m for m in major_models if m not in model_counts.index]
-
-            if missing_models:
-                st.write("**Major LLMs not yet studied:**")
-                for model in missing_models:
-                    st.write(f"- {model.upper()}")
-            else:
-                st.write("All major LLM models have been studied.")
-        else:
-            st.info("No LLM model data available.")
-    else:
-        st.info("LLM model information not available in the dataset.")
-
-    # Feature implementation gaps
-    st.subheader("Feature Implementation Gaps")
-
-    # Calculate implementation rates for key features
-    feature_rates = {}
-
-    if 'uses_rag' in vt_df.columns:
-        rag_yes = (vt_df['uses_rag'] == 'yes').sum()
-        feature_rates['RAG Implementation'] = rag_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
-
-    if 'generates_assessments' in vt_df.columns:
-        gen_yes = (vt_df['generates_assessments'] == 'yes').sum()
-        feature_rates['Generates Assessments'] = gen_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
-
-    if 'supports_collaboration' in vt_df.columns:
-        collab_yes = (vt_df['supports_collaboration'] == 'yes').sum()
-        feature_rates['Supports Collaboration'] = collab_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
-
-    if 'personalization' in vt_df.columns:
-        personal_yes = (vt_df['personalization'] != 'no_personalization').sum()
-        feature_rates['Has Personalization'] = personal_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
-
-    if 'privacy_protection' in vt_df.columns:
-        privacy_yes = (vt_df['privacy_protection'] != 'not_mentioned').sum()
-        feature_rates['Privacy Addressed'] = privacy_yes / len(vt_df) * 100 if len(vt_df) > 0 else 0
-
-    if feature_rates:
-        rates_df = pd.DataFrame(list(feature_rates.items()), columns=['Feature', 'Implementation Rate'])
-        fig = px.bar(rates_df, x='Feature', y='Implementation Rate',
-                     title="Feature Implementation Rates (%)",
-                     color='Implementation Rate',
-                     color_continuous_scale='RdYlGn')
-        fig.update_layout(showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Feature implementation data not available.")
-
-
-def display_summary_report(all_df, assessed_df, vt_df):
-    """
-    Summarizes a systematic literature review of virtual tutors in higher education by generating
-    an executive summary, key findings, and recommendations based on the input datasets. It also
-    provides options to export the data in various formats.
-
-    Parameters
-    ----------
-    all_df : DataFrame
-        Complete dataset containing all reviewed papers.
-    assessed_df : DataFrame
-        Subset of `all_df` containing only the papers that have been fully assessed.
-    vt_df : DataFrame
-        Subset of `assessed_df` containing only papers related to virtual tutors.
-
-    Raises
-    ------
-    KeyError
-        Raised if a required column (e.g., 'llm_model', 'empirical_evaluation', etc.) is not
-        present in the provided DataFrames.
-
-    Notes
-    -----
-    This function processes the input datasets to extract statistical summaries, analyze trends,
-    identify gaps, and generate actionable recommendations. It leverages Streamlit to present
-    the findings interactively and to enable exporting the results in different formats. The
-    input DataFrames must have specific columns (e.g., 'is_implementation', 'empirical_evaluation',
-    'privacy_protection', etc.) for full functionality.
-    """
-    st.header("📋 Summary Report")
-
-    st.write("### Executive Summary")
-
-    # Key findings
-    total_papers = len(all_df)
-    assessed_papers = len(assessed_df)
-    vt_papers = len(vt_df)
-    impl_papers = len(vt_df[vt_df['is_implementation'] == True])
-
-    summary_text = f"""
-    This systematic literature review analyzed **{total_papers} papers** on virtual tutors in higher education. 
-    Of these, **{assessed_papers} papers ({assessed_papers/total_papers*100:.1f}%)** have been fully assessed.
-    
-    **Key Findings:**
-    - **{vt_papers} papers** describe virtual tutors using large language models
-    - **{impl_papers} papers ({impl_papers/vt_papers*100:.1f}%)** present actual implementations
-    - **{vt_papers - impl_papers} papers** are theoretical or conceptual
-    
-    **Technology Landscape:**
-    """
-    st.write(summary_text)
-
-    # Top technologies
-    if 'llm_model' in vt_df.columns:
-        top_llms = vt_df['llm_model'].value_counts().head(3)
-        st.write("**Most Used LLMs:**")
-        for llm, count in top_llms.items():
-            st.write(f"- {llm}: {count} papers ({count/vt_papers*100:.1f}%)")
-
-    # Research recommendations
-    st.write("### Research Recommendations")
-
-    recommendations = []
-
-    # Check for evaluation gaps
-    if 'empirical_evaluation' in vt_df.columns:
-        no_eval_rate = (vt_df['empirical_evaluation'].isin(['no_evaluation', 'not_specified'])).sum() / len(vt_df)
-        if no_eval_rate > 0.5:
-            recommendations.append("- **Increase empirical evaluations**: Over 50% of virtual tutors lack proper evaluation")
-
-    # Check for domain diversity
-    if 'subject_domain' in vt_df.columns:
-        unique_domains = vt_df['subject_domain'].nunique()
-        if unique_domains < 5:
-            recommendations.append("- **Expand domain coverage**: Virtual tutors are concentrated in few subject areas")
-
-    # Check for privacy concerns
-    if 'privacy_protection' in vt_df.columns:
-        privacy_addressed = (vt_df['privacy_protection'] != 'not_mentioned').sum() / len(vt_df)
-        if privacy_addressed < 0.3:
-            recommendations.append("- **Address privacy concerns**: Less than 30% of papers discuss data protection")
-
-    for rec in recommendations:
-        st.write(rec)
-
-    # Export options
-    st.write("### Export Options")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        # Full dataset export
-        csv = vt_df.to_csv(index=False)
-        st.download_button(
-            "📊 Export Full VT Dataset",
-            csv,
-            "virtual_tutors_full.csv",
-            "text/csv"
-        )
-
-    with col2:
-        # Summary statistics export
-        summary_stats = {
-            'Total Papers': total_papers,
-            'Assessed Papers': assessed_papers,
-            'Virtual Tutor Papers': vt_papers,
-            'Implementation Papers': impl_papers,
-            'Papers with Evaluation': len(vt_df[~vt_df['empirical_evaluation'].isin(['no_evaluation', 'not_specified'])]),
-            'Papers with RAG': len(vt_df[vt_df['uses_rag'] == 'yes']),
-            'Papers with Collaboration': len(vt_df[vt_df['supports_collaboration'] == 'yes'])
-        }
-        summary_df = pd.DataFrame(list(summary_stats.items()), columns=['Metric', 'Count'])
-        csv = summary_df.to_csv(index=False)
-        st.download_button(
-            "📈 Export Summary Stats",
-            csv,
-            "summary_statistics.csv",
-            "text/csv"
-        )
-
-    with col3:
-        # Generate a text report
-        report_text = f"""
-        SYSTEMATIC LITERATURE REVIEW - VIRTUAL TUTORS IN HIGHER EDUCATION
-        Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-        
-        OVERVIEW
-        ========
-        Total Papers Analyzed: {total_papers}
-        Papers Assessed: {assessed_papers}
-        Virtual Tutor Papers: {vt_papers}
-        Implementation Papers: {impl_papers}
-        
-        KEY FINDINGS
-        ============
-        {summary_text}
-        
-        RECOMMENDATIONS
-        ===============
-        {"".join(recommendations)}
-        
-        This report was automatically generated from the systematic literature review database.
-        """
-        st.download_button(
-            "📄 Export Text Report",
-            report_text,
-            "slr_report.txt",
-            "text/plain"
-        )
-
-def display_assessment_matrix(papers_df, vt_df):
-    """
-    Displays an interactive assessment matrix for virtual tutors, enabling the comparison of various assessment
-    criteria across selected papers. Users can filter, format, and export data while visualizing completeness statistics
-    and analytics. This function includes options for customization and detailed data visualizations.
-
-    Parameters:
-        papers_df (pd.DataFrame): Dataframe containing details about individual research papers.
-        vt_df (pd.DataFrame): Dataframe containing detailed assessment metrics for virtual tutors.
-
-    Raises:
-        Streamlit-related exceptions: Errors might be raised if the Streamlit interface or components are misused.
-
-    Note:
-        This function makes use of the Streamlit library for rendering, interaction, and visualization.
-    """
-    st.header("📊 Assessment Matrix")
-
-    st.markdown("""
-    This matrix shows all assessment questions (columns) for selected papers (rows).
-    Use this to get a comprehensive overview of how different virtual tutors compare across all dimensions.
-    """)
-
-    # Filter options
+    # Show assessment controls
+    st.subheader("Assessment")
     col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
-        # Paper selection mode
-        selection_mode = st.radio(
-            "Select papers to display:",
-            ["All Virtual Tutors", "Implementation Papers Only", "Custom Selection"],
-            horizontal=True
+        # Check if OPENAI_API_KEY is set
+        api_key_set = bool(os.getenv('OPENAI_API_KEY'))
+        if not api_key_set:
+            st.warning("OPENAI_API_KEY not set. Assessment requires an API key.")
+
+    with col2:
+        run_assessment = st.button(
+            "Run Assessment",
+            disabled=not api_key_set,
+            help="Assess all sources against configured questions"
         )
 
-    # Get the appropriate dataframe based on selection
-    if selection_mode == "All Virtual Tutors":
-        matrix_df = vt_df.copy()
-    elif selection_mode == "Implementation Papers Only":
-        matrix_df = vt_df[vt_df['is_implementation'] == True].copy()
-    else:  # Custom Selection
-        paper_titles = vt_df['title'].tolist()
-        selected_titles = st.multiselect(
-            "Select papers to include in matrix:",
-            paper_titles,
-            default=paper_titles[:min(10, len(paper_titles))]
-        )
-        matrix_df = vt_df[vt_df['title'].isin(selected_titles)].copy()
+    with col3:
+        if st.button("Clear Matrix", type="secondary", help="Delete all assessment results"):
+            clear_matrix(get_connection(), project_id)
+            st.success("Matrix cleared!")
+            st.rerun()
 
-    if matrix_df.empty:
-        st.warning("No papers selected. Please adjust your selection criteria.")
+    # Run assessment if requested
+    if run_assessment:
+        _run_assessment_with_progress(project_id, config)
+        st.rerun()
+
+    st.divider()
+
+    # Load and display matrix data
+    matrix_data = get_matrix_data(get_connection(), project_id)
+
+    if not matrix_data['sources']:
+        st.info("No sources in this project. Add sources first.")
         return
 
-    with col2:
-        # Display options
-        show_full_titles = st.checkbox("Show full titles", value=False)
+    # Build DataFrame for display
+    df_data = []
+    for source in matrix_data['sources']:
+        row = {
+            'Title': source['title'][:60] + '...' if len(source.get('title', '') or '') > 60 else source.get('title', ''),
+            'Year': source.get('year'),
+        }
 
-    with col3:
-        # Color coding option
-        color_code = st.checkbox("Color code values", value=True)
+        # Add question columns
+        source_matrix = matrix_data['matrix'].get(source['id'], {})
+        for q in config.questions:
+            cell = source_matrix.get(q.key, {})
+            answer = cell.get('answer', '')
+            confidence = cell.get('confidence', '')
 
-    # Define assessment categories and their questions
-    assessment_categories = {
-        "Phase 1: Filtering": [
-            'is_virtual_tutor', 'is_implementation'
-        ],
-        "Phase 2: Core System": [
-            'deployment_status', 'llm_model', 'uses_rag', 'primary_function',
-            'subject_domain', 'generates_assessments'
-        ],
-        "Phase 3: Publication": [
-            'assessment_publication_type', 'availability'
-        ],
-        "Phase 4: Technical": [
-            'lms_integration', 'architecture_components', 'interaction_modality',
-            'analytics_features'
-        ],
-        "Phase 5: Pedagogical": [
-            'pedagogical_features', 'personalization', 'supports_collaboration',
-            'collaboration_types'
-        ],
-        "Phase 6: Evaluation": [
-            'empirical_evaluation', 'aspects_evaluated', 'sample_size',
-            'evaluation_duration'
-        ],
-        "Phase 7: Context": [
-            'institution_type', 'development_approach', 'language_support'
-        ],
-        "Phase 8: Additional": [
-            'privacy_protection', 'cost_requirements', 'reference_architecture'
-        ]
-    }
+            if answer:
+                # Format with confidence indicator
+                conf_emoji = {'high': '', 'medium': '', 'low': ''}.get(confidence, '')
+                row[q.key] = f"{answer}{conf_emoji}"
+            else:
+                row[q.key] = ''
 
-    # Category filter
-    selected_categories = st.multiselect(
-        "Select assessment categories to display:",
-        list(assessment_categories.keys()),
-        default=list(assessment_categories.keys())
-    )
+        df_data.append(row)
 
-    # Build columns list based on selected categories
-    display_columns = []
-    for category in selected_categories:
-        display_columns.extend(assessment_categories[category])
+    if df_data:
+        df = pd.DataFrame(df_data)
 
-    # Filter to only existing columns
-    display_columns = [col for col in display_columns if col in matrix_df.columns]
-
-    if not display_columns:
-        st.warning("No assessment data available for the selected categories.")
-        return
-
-    # Prepare display dataframe
-    # Create paper identifiers
-    if show_full_titles:
-        matrix_df['Paper'] = matrix_df['title']
-    else:
-        matrix_df['Paper'] = matrix_df['title'].apply(
-            lambda x: x[:60] + '...' if len(x) > 60 else x
+        # Stats
+        total_cells = len(matrix_data['sources']) * len(config.questions)
+        filled_cells = sum(
+            1 for s in matrix_data['sources']
+            for q in config.questions
+            if matrix_data['matrix'].get(s['id'], {}).get(q.key, {}).get('answer')
         )
 
-    # Add publication year to paper identifier
-    matrix_df['Paper'] = matrix_df.apply(
-        lambda row: f"{row['Paper']} ({row['publication_year']})", axis=1
-    )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Sources", len(matrix_data['sources']))
+        with col2:
+            st.metric("Questions", len(config.questions))
+        with col3:
+            pct = (filled_cells / total_cells * 100) if total_cells > 0 else 0
+            st.metric("Completion", f"{filled_cells}/{total_cells} ({pct:.0f}%)")
 
-    # Select only the columns we want to display
-    display_df = matrix_df[['Paper'] + display_columns].set_index('Paper')
+        # Visualizations
+        if filled_cells > 0:
+            st.subheader("Analysis")
 
-    # Apply color coding if requested
-    if color_code:
-        styled_df = display_df.style.applymap(color_code_cell)
-        st.dataframe(styled_df, use_container_width=True, height=600)
-    else:
-        st.dataframe(display_df, use_container_width=True, height=600)
+            # Confidence distribution across all answers
+            confidence_counts = {'high': 0, 'medium': 0, 'low': 0}
+            for source in matrix_data['sources']:
+                source_matrix = matrix_data['matrix'].get(source['id'], {})
+                for q in config.questions:
+                    cell = source_matrix.get(q.key, {})
+                    conf = cell.get('confidence')
+                    if conf in confidence_counts:
+                        confidence_counts[conf] += 1
 
-    # Summary statistics
-    st.subheader("Coverage Statistics")
+            if sum(confidence_counts.values()) > 0:
+                col1, col2 = st.columns(2)
+                with col1:
+                    conf_df = pd.DataFrame([
+                        {'Confidence': k.title(), 'Count': v}
+                        for k, v in confidence_counts.items()
+                    ])
+                    fig = px.pie(
+                        conf_df,
+                        values='Count',
+                        names='Confidence',
+                        title='Answer Confidence Distribution',
+                        color='Confidence',
+                        color_discrete_map={'High': '#2ecc71', 'Medium': '#f39c12', 'Low': '#e74c3c'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
-    col1, col2, col3 = st.columns(3)
+                # Answer distributions per question
+                with col2:
+                    # Build answer counts per question
+                    question_data = []
+                    for q in config.questions:
+                        answer_counts = {}
+                        for source in matrix_data['sources']:
+                            source_matrix = matrix_data['matrix'].get(source['id'], {})
+                            cell = source_matrix.get(q.key, {})
+                            answer = cell.get('answer')
+                            if answer:
+                                # Truncate long answers for display
+                                display_answer = str(answer)[:30]
+                                answer_counts[display_answer] = answer_counts.get(display_answer, 0) + 1
+                        for ans, count in answer_counts.items():
+                            question_data.append({
+                                'Question': q.key,
+                                'Answer': ans,
+                                'Count': count
+                            })
 
-    with col1:
-        # Calculate completeness
-        total_cells = len(display_df) * len(display_df.columns)
-        non_null_cells = display_df.notna().sum().sum()
-        completeness = (non_null_cells / total_cells * 100) if total_cells > 0 else 0
+                    if question_data:
+                        q_df = pd.DataFrame(question_data)
+                        # Show distribution for first question with enum/boolean type
+                        for q in config.questions:
+                            if q.answer_type.value in ('boolean', 'enum'):
+                                subset = q_df[q_df['Question'] == q.key]
+                                if not subset.empty:
+                                    fig = px.bar(
+                                        subset,
+                                        x='Answer',
+                                        y='Count',
+                                        title=f'Answers: {q.key}'
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
+                                    break
 
-        st.metric(
-            "Matrix Completeness",
-            f"{completeness:.1f}%",
-            help="Percentage of non-null values in the matrix"
-        )
+            # Completion heatmap
+            st.markdown("**Completion Matrix**")
+            heatmap_data = []
+            for source in matrix_data['sources']:
+                row = {'Source': source['title'][:40] if source.get('title') else f"ID {source['id']}"}
+                source_matrix = matrix_data['matrix'].get(source['id'], {})
+                for q in config.questions:
+                    cell = source_matrix.get(q.key, {})
+                    row[q.key] = 1 if cell.get('answer') else 0
+                heatmap_data.append(row)
 
-    with col2:
-        st.metric(
-            "Papers Displayed",
-            len(display_df),
-            help="Number of papers in the current view"
-        )
+            if heatmap_data:
+                heatmap_df = pd.DataFrame(heatmap_data)
+                if len(config.questions) > 0 and len(heatmap_df) > 0:
+                    # Create heatmap with question keys as columns
+                    question_keys = [q.key for q in config.questions]
+                    heatmap_values = heatmap_df[question_keys].values
 
-    with col3:
-        st.metric(
-            "Questions Displayed",
-            len(display_columns),
-            help="Number of assessment questions shown"
-        )
+                    fig = px.imshow(
+                        heatmap_values,
+                        labels=dict(x="Question", y="Source", color="Completed"),
+                        x=question_keys,
+                        y=heatmap_df['Source'].tolist(),
+                        color_continuous_scale=['#f8f9fa', '#2ecc71'],
+                        aspect='auto'
+                    )
+                    fig.update_layout(title='Assessment Completion (green = answered)')
+                    st.plotly_chart(fig, use_container_width=True)
 
-    # Field completeness chart
-    st.subheader("Field Completeness Analysis")
+        # Display matrix
+        st.subheader("Matrix")
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-    field_completeness = (display_df.notna().sum() / len(display_df) * 100).sort_values(ascending=True)
+        # Export options
+        st.subheader("Export")
+        col1, col2 = st.columns(2)
 
-    fig = px.bar(
-        x=field_completeness.values,
-        y=field_completeness.index,
-        orientation='h',
-        title="Completeness by Assessment Question (%)",
-        labels={'x': 'Completeness (%)', 'y': 'Assessment Question'}
-    )
-    fig.update_layout(height=max(400, len(field_completeness) * 20))
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Export options
-    st.subheader("Export Options")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        # Export full matrix
-        csv = display_df.to_csv()
-        st.download_button(
-            "📊 Export Matrix (CSV)",
-            csv,
-            "assessment_matrix.csv",
-            "text/csv"
-        )
-
-    with col2:
-        # Export transposed matrix
-        transposed_csv = display_df.T.to_csv()
-        st.download_button(
-            "🔄 Export Transposed (CSV)",
-            transposed_csv,
-            "assessment_matrix_transposed.csv",
-            "text/csv"
-        )
-
-    with col3:
-        # Export to Excel with formatting
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            display_df.to_excel(writer, sheet_name='Assessment Matrix')
-
-            # Get workbook and worksheet
-            workbook = writer.book
-            worksheet = writer.sheets['Assessment Matrix']
-
-            # Add formatting
-            header_format = workbook.add_format({
-                'bold': True,
-                'text_wrap': True,
-                'valign': 'top',
-                'bg_color': '#D7E4BD',
-                'border': 1
-            })
-
-            # Apply header formatting
-            for col_num, value in enumerate(display_df.columns.values):
-                worksheet.write(0, col_num + 1, value, header_format)
-
-            # Auto-fit columns
-            worksheet.set_column(0, 0, 50)  # Paper titles
-            worksheet.set_column(1, len(display_df.columns), 20)  # Data columns
-
-        buffer.seek(0)
-        st.download_button(
-            "📑 Export to Excel",
-            buffer,
-            "assessment_matrix.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    # Interactive heatmap view
-    st.subheader("Interactive Heatmap View")
-
-    # Convert categorical data to numeric for heatmap
-    numeric_df = display_df.copy()
-
-    # Define value mappings for common categorical values
-    value_mappings = {
-        'yes': 3, 'no': 1, 'not_specified': 0,
-        'controlled_experiment': 4, 'pilot_study': 3, 'survey_only': 2,
-        'no_evaluation': 1, 'not_specified': 0,
-        'research_prototype': 1, 'pilot_deployment': 2, 'production_use': 3,
-        'discontinued': 0, 'not_specified': 0,
-        'freely_available': 3, 'available_on_request': 2, 'commercial_license': 1,
-        'internal_use_only': 1, 'not_available': 0, 'not_specified': 0
-    }
-
-    # Apply mappings
-    for col in numeric_df.columns:
-        if numeric_df[col].dtype == 'object':
-            numeric_df[col] = numeric_df[col].map(
-                lambda x: value_mappings.get(x, 2) if pd.notna(x) else 0
+        with col1:
+            csv = df.to_csv(index=False)
+            st.download_button(
+                "Download CSV",
+                csv,
+                f"content_matrix_{project['name']}.csv",
+                "text/csv"
             )
 
-    # Create heatmap
-    fig = px.imshow(
-        numeric_df.T,
-        labels=dict(x="Papers", y="Assessment Questions", color="Value"),
-        title="Assessment Matrix Heatmap",
-        aspect="auto",
-        color_continuous_scale="RdYlGn"
-    )
-    fig.update_xaxes(showticklabels=False)  # Hide x labels for clarity
-    fig.update_layout(height=max(600, len(display_columns) * 20))
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def color_code_cell(val):
-    """
-    Determines the background color for a DataFrame cell based on its value.
-
-    This function is used to apply conditional formatting to cells in a pandas
-    DataFrame. The output is a CSS style string that defines the background
-    color based on the given value's category. The categories include positive,
-    neutral, negative, and unspecified statuses, each mapped to specific colors.
-    The function ensures that NaN values are assigned a default light gray
-    background.
-
-    Parameters:
-    val : Any
-        The value of the cell that determines the background color.
-        Can be of any type, but it is converted to a lowercase string
-        for comparison purposes.
-
-    Returns:
-    str
-        A CSS background-color property value as a string, specifying the color
-        to be applied to the table cell.
-    """
-    if pd.isna(val):
-        return 'background-color: #f0f0f0'  # Light gray for NaN values
-
-    # Convert to string for comparison
-    val_str = str(val).lower()
-
-    # Positive values (distinct green)
-    if val_str in ['yes', 'freely_available', 'controlled_experiment',
-                   'production_use', 'gdpr_discussed', 'data_protection_described']:
-        return 'background-color: #00AA55'  # Vibrant green
-
-    # Neutral/medium values (yellow/orange)
-    elif val_str in ['pilot_deployment', 'pilot_study', 'available_on_request',
-                     'research_prototype', 'privacy_addressed']:
-        return 'background-color: #FFC300'  # Vivid yellow/amber
-
-    # Negative values (deeper red)
-    elif val_str in ['no', 'no_evaluation', 'not_available', 'discontinued',
-                     'not_mentioned']:
-        return 'background-color: #E74C3C'  # Strong red
-
-    # Not specified (blue-gray)
-    elif val_str in ['not_specified', 'not_clear']:
-        return 'background-color: #7F8C8D'  # Distinct gray with blue tint
-
-    # Default for other values
+        with col2:
+            # Full export with all details
+            full_export = _build_full_export(matrix_data, config)
+            st.download_button(
+                "Download Full JSON",
+                json.dumps(full_export, indent=2, cls=NumpyEncoder),
+                f"content_matrix_{project['name']}.json",
+                "application/json"
+            )
     else:
-        return ''
+        st.info("No assessment data yet. Run assessment to populate the matrix.")
+
+
+def _run_assessment_with_progress(project_id: int, config: ProjectConfig):
+    """Run assessment with a progress bar."""
+    from agent import create_agent
+
+    try:
+        agent = create_agent(
+            model=config.model,
+            system_prompt=config.system_prompt
+        )
+    except Exception as e:
+        st.error(f"Failed to create agent: {e}")
+        return
+
+    runner = AssessmentRunner(
+        conn=get_connection(),
+        project_id=project_id,
+        config=config,
+        agent=agent
+    )
+
+    # Get counts for progress bar
+    sources = runner.get_sources()
+    pending = list(runner.get_pending_assessments(sources, config.questions))
+
+    if not pending:
+        st.info("All sources have already been assessed.")
+        return
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    completed = 0
+    total = len(pending)
+
+    def update_progress(progress):
+        nonlocal completed
+        completed = progress.completed_assessments
+        pct = completed / total if total > 0 else 1.0
+        progress_bar.progress(pct)
+        if progress.current_source:
+            status_text.text(f"Assessing: {progress.current_source[:40]}... ({progress.current_question})")
+        else:
+            status_text.text("Assessment complete!")
+
+    with st.spinner(f"Running assessment on {total} pending items..."):
+        result = runner.run(progress_callback=update_progress)
+
+    progress_bar.progress(1.0)
+    st.success(f"Completed {result.completed_assessments} assessments ({result.failed_assessments} failed)")
+
+
+def _build_full_export(matrix_data: dict, config: ProjectConfig) -> dict:
+    """Build a full export with all matrix details."""
+    export = {
+        'questions': [
+            {
+                'key': q.key,
+                'text': q.text,
+                'type': q.answer_type.value,
+                'options': q.options
+            }
+            for q in config.questions
+        ],
+        'sources': []
+    }
+
+    for source in matrix_data['sources']:
+        source_export = {
+            'id': source['id'],
+            'title': source['title'],
+            'authors': source['authors'],
+            'year': source['year'],
+            'answers': {}
+        }
+
+        source_matrix = matrix_data['matrix'].get(source['id'], {})
+        for q in config.questions:
+            cell = source_matrix.get(q.key, {})
+            if cell:
+                source_export['answers'][q.key] = {
+                    'value': cell.get('answer'),
+                    'confidence': cell.get('confidence'),
+                    'citations': cell.get('citations', [])
+                }
+
+        export['sources'].append(source_export)
+
+    return export
+
+
+def display_keywords_tab(project_id: int = None):
+    """Display keyword analysis tab."""
+    st.title("Keyword Analysis")
+
+    if project_id:
+        project = get_project(project_id)
+        if project:
+            st.caption(f"Keywords for project: **{project['name']}**")
+    else:
+        st.caption("Keywords across all sources (global)")
+
+    keyword_df = load_keyword_data(project_id)
+
+    if keyword_df.empty:
+        st.warning("No keywords found. Keywords are extracted during source import.")
+        return
+
+    # Top keywords
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Top Keywords")
+        top_n = st.slider("Number of keywords", 10, 50, 20)
+        top_keywords = keyword_df.head(top_n)
+
+        fig = px.bar(
+            top_keywords,
+            x='source_count',
+            y='keyword',
+            orientation='h',
+            title=f"Top {top_n} Keywords"
+        )
+        fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.subheader("Keyword Statistics")
+        st.metric("Total Keywords", len(keyword_df))
+        st.metric("Keywords with 5+ sources", len(keyword_df[keyword_df['source_count'] >= 5]))
+
+        # Keyword search
+        search = st.text_input("Search keywords")
+        if search:
+            matches = keyword_df[keyword_df['keyword'].str.contains(search, case=False, na=False)]
+            st.dataframe(matches, use_container_width=True, hide_index=True)
+
+    # Full keyword table
+    st.subheader("All Keywords")
+    st.dataframe(keyword_df, use_container_width=True, hide_index=True)
 
 
 def main():
-    """
-    Main function to execute the Streamlit application's workflow for managing
-    a virtual literature dashboard. It initializes the application configuration,
-    setup the database, provides user interface for importing citations, processing
-    papers, importing arXiv papers, and navigating through various tabs for data
-    management and analysis.
-
-    Raises:
-        sqlite3.OperationalError: If the database setup is incomplete, primarily
-        when citations are not imported, or papers are not processed.
-
-    Attributes:
-        st (Streamlit module): Used for creating interactive UI components in the
-        application.
-
-    Functions:
-        load_dotenv: Loads environment variables from a .env file.
-        find_dotenv: Automatically locates the .env file path.
-        setup_database: Initializes the application's database structure if not
-        already set up.
-        import_citations: Imports citation metadata from configured sources into
-        the database.
-        process_papers: Processes PDFs in a predefined directory for integration
-        into the database.
-        import_arxiv_papers: Imports arXiv papers in PDF format from a user-specified
-        directory and logs the data into the database.
-        load_data_with_lists: Retrieves processed data from the database and formats
-        them for analysis and display.
-        create_filters: Generates various filter options for filtering data across
-        different tabs.
-        apply_filters: Applies chosen filters to the dataset to refine query results.
-        display_papers_tab: Displays papers with the applied filters.
-        display_assessments_tab: Displays assessments data along with aggregated
-        insights.
-        display_keywords_tab: Undertakes keyword-based analysis of the papers.
-        papers_view: Displays detailed paper assessment information.
-        add_paper: Adds new paper sources alongside their metadata to the database.
-        display_analysis_tab: Provides an interface for comprehensive analysis of
-        papers and related datasets.
-    """
+    """Main application entry point."""
     load_dotenv(find_dotenv())
+
     st.set_page_config(
-        page_title="Virtual Tutor Literature Dashboard",
+        page_title="Literature Management",
         initial_sidebar_state="expanded",
         layout="wide"
     )
 
-    # Initialize the db
+    # Initialize database
     setup_database()
 
+    # Sidebar
     with st.sidebar:
-        st.header("Data Import Actions")
+        st.header("Literature Management")
 
-        if st.button("Import Citations", help="Import citations from configured sources"):
-            with st.spinner("Importing citations..."):
-                import_citations()
-                st.success("Citations imported!")
-
-        if st.button("Process Papers", help="Process PDFs in 'papers' directory"):
-            with st.spinner("Processing papers..."):
-                process_papers()
-                st.success("Papers processed!")
+        # Project selector
+        project_id = display_project_selector()
 
         st.divider()
 
-        st.subheader("Import arXiv Papers")
-        arxiv_dir = st.text_input(
-            "arXiv PDF Directory",
-            value="arxiv_papers",
-            help="Directory containing arXiv PDFs to import"
-        )
+        st.subheader("Data Import")
+        if st.button("Import Citations", help="Import citations from search_results/"):
+            with st.spinner("Importing citations..."):
+                import_citations(project_id)
+                st.success("Citations imported!")
+                st.rerun()
 
-        if st.button("Import arXiv PDFs",
-                     help="Import PDFs and create database entries automatically"):
-            if arxiv_dir and Path(arxiv_dir).exists():
-                pdf_files = list(Path(arxiv_dir).glob('*.pdf'))
-                pdf_count = len(pdf_files)
-                if pdf_count > 0:
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
+        st.divider()
 
-                    with st.spinner(f"Importing {pdf_count} arXiv papers..."):
-                        try:
-                            import_arxiv_papers(arxiv_dir)
-                            st.success(f"Completed importing arXiv papers!")
+        # Database stats
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM sources")
+            source_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM projects")
+            project_count = cursor.fetchone()[0]
+            st.metric("Total Sources", source_count)
+            st.metric("Projects", project_count)
+        except Exception:
+            st.info("Database not yet initialized")
 
-                            # Show summary
-                            conn = get_connection()
-                            cursor = conn.cursor()
-                            cursor.execute("""
-                                           SELECT COUNT(*) FROM papers
-                                           WHERE publication_source = 'arxiv_auto_import'
-                                           """)
-                            imported_count = cursor.fetchone()[0]
-                            st.info(f"Total arXiv papers in database: {imported_count}")
-
-                        except Exception as e:
-                            st.error(f"Error during import: {str(e)}")
-                            st.info("If you see 'NOT NULL constraint failed', please run migrate_database.py first")
-                else:
-                    st.warning(f"No PDF files found in '{arxiv_dir}'")
-            else:
-                st.error(f"Directory '{arxiv_dir}' does not exist!")
-
-    try:
-        papers_df = load_data_with_lists()
-    except sqlite3.OperationalError:
-        st.error("Please import citations and process papers first!")
-        st.stop()
-
-    # Print debug info about initial data
-    print("\nInitial data load:")
-    print(f"Total papers: {len(papers_df)}")
-    print("\nColumns present:", papers_df.columns.tolist())
-    print("\nAssessment status distribution:")
-    print(papers_df['assessment_status'].value_counts(dropna=False))
-
-    # Create filters that will be used across tabs
-    filters = create_filters(papers_df)
-
-    # Create tabs
-    papers_tab, assessments_tab, keywords_tab, analysis_tab, papers_view_tab, add_paper_tab = st.tabs([
-        "Papers", "Aggregated Assessments", "Keyword Analysis", "📊 Analysis", "Paper Assessments", "Add Paper"
+    # Tabs
+    projects_tab, sources_tab, matrix_tab, keywords_tab, add_source_tab = st.tabs([
+        "Projects", "Sources", "Content Matrix", "Keywords", "Add Source"
     ])
 
-    with papers_tab:
-        filtered_df = apply_filters(papers_df, filters)
-        display_papers_tab(filtered_df)
+    with projects_tab:
+        display_projects_tab()
 
-    with assessments_tab:
-        display_assessments_tab(papers_df, filters)
+    with sources_tab:
+        display_sources_tab(project_id)
+
+    with matrix_tab:
+        display_content_matrix_tab(project_id)
 
     with keywords_tab:
-        display_keywords_tab(papers_df, filters)
+        display_keywords_tab(project_id)
 
-    with papers_view_tab:
-        papers_view(filters)
-
-    with add_paper_tab:
-        add_paper()
-
-    with analysis_tab:
-        display_analysis_tab(papers_df, filters)
+    with add_source_tab:
+        display_add_source_tab(project_id)
 
 
 if __name__ == "__main__":

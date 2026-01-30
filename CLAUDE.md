@@ -4,9 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Systematic Literature Review (SLR) tool for research on "Virtual Tutors in Higher Education". The system imports research papers from multiple sources, automatically assesses them through an 8-phase LLM-driven pipeline, and provides a Streamlit dashboard for visualization and analysis.
+A general-purpose Systematic Literature Review (SLR) tool. The system imports research papers from multiple sources, supports configurable content matrix questions, and provides a Streamlit dashboard for management, LLM-powered assessment, and analysis.
 
-**Virtual Tutor Definition:** AI-based educational systems using NLP/LLMs in higher education for tutoring or learning support.
+## Branching Model
+
+- `main` — stable branch, target for pull requests
+- `develop` — active development branch
+- Feature branches merge into `develop` via PR, then `develop` merges into `main`
 
 ## Common Commands
 
@@ -59,65 +63,80 @@ Ruff config: line-length 100, target Python 3.10, selects E/W/F/I/B/C4/UP rules 
 
 ```bash
 cd citation_engine
-podman-compose up -d        # Start PostgreSQL
-podman-compose down          # Stop PostgreSQL
+podman-compose up -d                    # Start PostgreSQL
+podman-compose --profile admin up -d    # Start PostgreSQL + pgAdmin (port 5050)
+podman-compose down                     # Stop services
+podman-compose down -v                  # Stop and remove volumes
 ```
 
 ## Architecture
 
 ### Main Components
 
-1. **Streamlit Dashboard** (`src/main.py`) — Web UI with tabs: Papers, Assessments, Keywords, Analysis, Assessment Matrix
+1. **Streamlit Dashboard** (`src/main.py`) — Web UI with tabs: Projects, Sources, Content Matrix, Keywords, Add Source. Supports multiple SLR projects with project-scoped views.
 
-2. **Assessment Framework** (`src/assessment/`) — 8-phase LLM evaluation pipeline:
-   - Phase 1: Initial filtering (is it a virtual tutor?)
-   - Phase 2: Core system characteristics (LLM model, RAG, function)
-   - Phase 3: Publication metadata
-   - Phase 4: Technical architecture (skipped for theory papers)
-   - Phase 5: Pedagogical features
-   - Phase 6: Evaluation methodology
-   - Phase 7: Implementation context (skipped for theory papers)
-   - Phase 8: Privacy and compliance
-
-   Each phase has a processor in `src/assessment/phases/phase{N}_{name}.py`. Phases 4 and 7 conditionally skip for theoretical (non-implementation) papers.
+2. **Content Matrix Assessment** — Agent-based assessment of sources against configured questions:
+   - `src/models.py` — Pydantic models for ProjectConfig, Question, Answer types
+   - `src/agent.py` — LLM-based assessment agent using OpenAI API
+   - `src/assessment.py` — Assessment orchestration loop with progress tracking
 
 3. **Citation Engine** (`citation_engine/`) — Reusable package for LLM-based citation verification. Supports SQLite (single agent) and PostgreSQL (multi-agent) modes. Has LangChain/LangGraph tool wrappers in `citation_engine/src/citation_engine/tool.py`.
+
+4. **Import Pipeline** (`src/import_citations.py`) — Citation import from BibTeX, IEEE CSV, Springer formats. Imports to global sources table with optional project linking.
 
 ### Data Flow
 
 ```
-Input Sources (BibTeX, CSV, PDF, arXiv)
-    → CitationProcessor / PdfProcessor
-    → SQLite Database (papers, virtual_tutor_assessments, keywords)
-    → VirtualTutorAssessment (8-phase LLM pipeline)
-    → Streamlit Dashboard (visualization, filtering, export)
+Input Sources (BibTeX, CSV)
+    → CitationProcessor (with optional project_id)
+    → SQLite Database (sources, project_sources, keywords)
+    → Streamlit Dashboard (project-scoped visualization, filtering, export)
+
+Content Matrix Assessment:
+    Project Config (questions)
+    + Sources (abstract/content)
+    → AssessmentAgent (LLM reasoning)
+    → content_matrix table (source × question → answer)
+    → Dashboard display + CSV/JSON export
 ```
 
 ### Key Files
 
-- `src/main.py` — Main dashboard application
-- `src/schema.sql` — Database schema with normalized junction tables for multi-valued fields
-- `src/process_papers.py` — PDF extraction and LLM assessment with rate limiting
-- `src/import_citations.py` — Citation import from BibTeX, IEEE CSV, Springer, DBLP, ProQuest formats
-- `src/assessment/models.py` — Pydantic models for all 8 assessment phases
-- `src/assessment/virtual_tutor_assessment.py` — Assessment orchestrator
+- `src/main.py` — Main dashboard application with all tabs
+- `src/models.py` — Pydantic models for project config and content matrix
+- `src/agent.py` — Assessment agent for analyzing sources
+- `src/assessment.py` — Assessment loop orchestration
+- `src/schema.sql` — Database schema (sources, projects, project_sources, content_matrix, keywords)
+- `src/import_citations.py` — Citation import from BibTeX, IEEE CSV, Springer formats
+- `src/process_papers.py` — PDF metadata extraction utilities
 
 ### Database Design
 
-Multi-valued assessment fields (architecture_components, interaction_modalities, pedagogical_features, etc.) are normalized into separate junction tables. Views include `papers_with_assessment_status`, `implementation_papers`, and `keyword_frequency`. Duplicate detection uses DOI and title+authors matching.
+The schema supports multiple SLR projects:
+
+- **sources** — Global registry of papers/documents (identified by DOI or content hash)
+- **projects** — SLR projects with name, topic, description, and JSON config for content matrix questions
+- **project_sources** — Junction table linking sources to projects (many-to-many)
+- **content_matrix** — Project-scoped assessment results (source × question → answer)
+- **keywords** — Global keyword registry
+- **rel_keywords_sources** — Keywords linked to sources
+
+Views: `keyword_frequency`, `project_sources_view`
 
 ## Environment Variables
 
 ```bash
-OPENAI_API_KEY=         # Required for LLM assessment
-CITATION_DB_URL=        # PostgreSQL URL for Citation Engine multi-agent mode
-CITATION_LLM_MODEL=     # Default: gpt-4o-mini
+OPENAI_API_KEY=                    # Required for LLM features
+CITATION_DB_URL=                   # PostgreSQL URL for Citation Engine multi-agent mode
+CITATION_LLM_MODEL=               # Default: gpt-4o-mini
+CITATION_LLM_URL=                  # OpenAI-compatible endpoint URL (optional)
+CITATION_REASONING_REQUIRED=low    # none|low|medium|high — LLM reasoning depth for verification
 ```
 
 ## Development Notes
 
 - Python >= 3.10 required (project uses 3.12 venv)
-- Uses Pydantic for structured LLM output validation
-- Rate limiting implemented for API calls in `PdfProcessor`
 - Citation Engine uses optional dependency extras (`full`, `pdf`, `web`, `langchain`, `postgresql`, `dev`)
 - Database schema auto-applied on first connection via `setup_database_with_connection`
+- Dev container available (`.devcontainer/`) with Python 3.12, Tesseract OCR, and poppler-utils
+- Main database file: `literature.db` (SQLite) at project root
