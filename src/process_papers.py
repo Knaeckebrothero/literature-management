@@ -1,20 +1,12 @@
 """
-Script to process PDFs and assess them for inclusion in a systematic literature review.
-Uses LangChain for PDF processing and LLM-based assessment.
+Module containing utility functions for working with PDFs and handling DOIs.
+This includes extracting metadata such as titles, authors, and DOIs from PDFs,
+and standardizing DOI formats.
 """
-import os
-import sqlite3
 import re
 import PyPDF2
-import time
-from typing import List, Optional, Literal, Dict, Any
-from datetime import datetime
+from typing import Optional, Dict, Any
 from pathlib import Path
-from dotenv import load_dotenv, find_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.llms import Replicate
-from assessment.paper import PaperAssessment
 import logging
 from datetime import datetime
 
@@ -23,29 +15,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class RateLimiter:
-    def __init__(self, requests_per_minute: int = 20):
-        self.delay = 60.0 / requests_per_minute
-        self.last_request = 0
-
-    def wait(self):
-        """Wait appropriate amount of time since last request"""
-        now = time.time()
-        elapsed = now - self.last_request
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-        self.last_request = time.time()
-
-
 def standardize_doi(doi: str) -> Optional[str]:
     """
-    Function to standardize a DOI string to the format '10.xxxx/yyyy.zzzz'.
-    Handles various DOI formats and patterns found in academic papers.
+    Standardizes a DOI (Digital Object Identifier) string into a canonical format that
+    removes prefixes, adjusts case, and ensures the DOI adheres to specific patterns.
+
+    This function identifies and standardizes DOIs that match various formats
+    commonly used across different organizations or publications. The DOI is first
+    cleaned by removing common prefixes and then matched against a list of predefined
+    regular expression patterns. For ACM DOIs, specific standardization is applied to
+    ensure consistent formatting.
+
+    Parameters:
+        doi: str
+            The input DOI string to be standardized.
+
+    Returns:
+        Optional[str]: The standardized DOI string, or None if no valid DOI is found.
     """
     if not doi:
         return None
 
-    print(f"Original DOI string: {doi}")
+    # print(f"Original DOI string: {doi}")
 
     # Remove common prefixes and whitespace
     doi = doi.lower().strip()
@@ -63,7 +54,7 @@ def standardize_doi(doi: str) -> Optional[str]:
         if doi.startswith(prefix):
             doi = doi[len(prefix):]
 
-    print(f"After prefix removal: {doi}")
+    # print(f"After prefix removal: {doi}")
 
     # Define patterns for different DOI formats
     patterns = [
@@ -119,8 +110,25 @@ def standardize_doi(doi: str) -> Optional[str]:
 
 def extract_doi_from_pdf(pdf_path: str) -> Optional[str]:
     """
-    Function to extract the DOI from PDF content or metadata.
-    Now handles various DOI formats and locations in academic papers.
+    Extracts the DOI (Digital Object Identifier) from the specified PDF file.
+
+    This function searches for DOI information by first checking the metadata of the PDF,
+    and then by scanning the first few pages of the document for potential DOI patterns
+    or related phrases. If a DOI is found, it is extracted, standardized, and returned.
+    The function uses typical DOI format and common phrases like "doi", "10.1002/", etc.,
+    to identify potential DOI markers.
+
+    Errors encountered during the reading or parsing process are silently handled by
+    printing an error message, while the function returns None in such cases.
+
+    Parameters:
+        pdf_path (str): The path to the PDF file from which the DOI needs to be extracted.
+
+    Returns:
+        Optional[str]: The standardized DOI string if found; None otherwise.
+
+    Raises:
+        None
     """
     try:
         with open(pdf_path, 'rb') as file:
@@ -132,7 +140,6 @@ def extract_doi_from_pdf(pdf_path: str) -> Optional[str]:
                 if doi:
                     return doi
 
-            # Search first few pages
             # Search first few pages
             search_phrases = [
                 'doi',
@@ -181,7 +188,24 @@ def extract_doi_from_pdf(pdf_path: str) -> Optional[str]:
 
 def extract_title_from_pdf(pdf_path: str) -> Optional[str]:
     """
-    Function to extract the title from PDF.
+    Extracts the title of a PDF document using metadata or the first page text.
+
+    This function attempts to extract the title from the PDF document specified by
+    `pdf_path`. The extraction process first checks the metadata of the PDF for a
+    title. If no metadata title is found, it examines the text on the first page
+    of the document, using a heuristic to identify a plausible title candidate.
+
+    Parameters:
+    pdf_path: str
+        The file path of the PDF document from which to extract the title.
+
+    Returns:
+    Optional[str]
+        The extracted title if identified, or None if a title could not be
+        determined or an error occurred.
+
+    Raises:
+    None
     """
     try:
         with open(pdf_path, 'rb') as file:
@@ -207,236 +231,217 @@ def extract_title_from_pdf(pdf_path: str) -> Optional[str]:
         return None
 
 
-class PdfProcessor:
+def extract_authors_from_pdf(pdf_path: str) -> Optional[str]:
     """
-    ETL class for importing and processing research papers.
+    Extract authors from a PDF file.
+
+    This function attempts to fetch the authors of a document provided in PDF format. It first
+    tries to extract the authors from the PDF metadata. If the metadata does not contain
+    author information, the function attempts to identify potential author names from the
+    text present on the first page of the document. It leverages patterns such as the proximity
+    of the author list to the title or keywords like 'abstract', 'introduction', and 'keywords'
+    to determine probable author entries. The resulting author names, if any, are returned
+    as a string. If authors cannot be identified or in case of any failure, the function
+    returns None.
+
+    Attributes:
+        pdf_path (str): Path to the PDF file from which authors are to be extracted.
+
+    Errors Raised:
+        Any exceptions arising during the file reading or processing are caught and logged,
+        and the function will safely return None instead.
+
+    Returns:
+        Optional[str]: A string containing names of identified authors, or None if authors
+        cannot be determined.
     """
-    def __init__(self, prompt_path: str = 'assessment_prompt.txt', db_path: str = 'literature.db'):
-        self.conn = sqlite3.connect(db_path)
-        # cursor = self.conn.cursor()
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
 
-        # Initialize LangChain components
-        self.llm_open_ai = ChatOpenAI(
-            model="gpt-4o", # gpt-4-turbo gpt-4o-mini
-            temperature=0.1,
-            seed=3459746589468594
-        )
-        self.llm_llama = Replicate(
-            model="meta/meta-llama-3.1-405b-instruct", # model="meta/meta-llama-3.1-405b-instruct",
-            model_kwargs={
-                "top_k": 50,
-                "top_p": 1,
-                "temperature": 0.1,
-                "max_tokens": 65536,
-                "seed": 3459746589468594
-            },
-        )
+            # Try metadata first
+            if pdf.metadata and '/Author' in pdf.metadata:
+                return pdf.metadata['/Author'].strip()
 
-        # Initialize the assessment class
-        self.assessment = PaperAssessment(
-            model=self.llm_open_ai,
-            prompt_path=prompt_path
-        )
+            # Try to extract from first page
+            first_page_text = pdf.pages[0].extract_text()
+            lines = first_page_text.split('\n')
 
-        # Initialize rate limiter (20 requests per minute)
-        self.rate_limiter = RateLimiter(requests_per_minute=20)
+            # Look for author patterns (usually after title)
+            title = extract_title_from_pdf(pdf_path)
+            if title:
+                title_lower = title[:30].lower()
+                for i, line in enumerate(lines):
+                    if title_lower in line.lower() and i + 1 < len(lines):
+                        # Authors often appear right after title
+                        potential_authors = []
+                        for j in range(i + 1, min(i + 5, len(lines))):
+                            next_line = lines[j].strip()
+                            # Stop if we hit abstract or other sections
+                            if any(kw in next_line.lower() for kw in ['abstract', 'introduction', 'keywords', '1.']):
+                                break
+                            if next_line and len(next_line) > 5:
+                                potential_authors.append(next_line)
 
+                        if potential_authors:
+                            return ', '.join(potential_authors[:2])  # Take first 2 lines as authors
 
-    def __del__(self):
-        if self.conn:
-            self.conn.close()
-
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-
-
-    def find_paper_id(self, pdf_path: str) -> Optional[int]:
-        """
-        Function to find the paper ID from the database using DOI or title fallback.
-        Returns the integer ID from the papers table.
-        """
-        cursor = self.conn.cursor()
-
-        # Try DOI first
-        doi = extract_doi_from_pdf(pdf_path)
-        if doi:
-            # Debug: Print all DOIs in database for comparison
-            cursor.execute('SELECT doi FROM papers')
-            all_dois = [row[0] for row in cursor.fetchall()]
-            print(f"Found DOI in PDF: {doi}")
-            print(f"Looking for match among database DOIs: {all_dois[:5]}...")  # Show first 5 for brevity
-
-            # Try exact match first
-            cursor.execute('SELECT id FROM papers WHERE doi = ?', (doi,))
-            result = cursor.fetchone()
-            if result:
-                return result[0]
-
-            # If no exact match, try case-insensitive match
-            cursor.execute('SELECT id FROM papers WHERE LOWER(doi) = LOWER(?)', (doi,))
-            result = cursor.fetchone()
-            if result:
-                return result[0]
-
-            # If still no match, try without any potential trailing characters
-            base_doi = re.match(r'(10\.\d{4,5}/[^/\s]+)', doi)
-            if base_doi:
-                cursor.execute('SELECT id FROM papers WHERE doi LIKE ?', (f"{base_doi.group(1)}%",))
-                result = cursor.fetchone()
-                if result:
-                    return result[0]
-
-            print(f"DOI {doi} not found in database with any matching method, trying title matching...")
-
-        # Fallback to title matching
-        title = extract_title_from_pdf(pdf_path)
-        if title:
-            print(f"Attempting to match title: {title}")
-
-            # Clean the title for better matching
-            clean_title = re.sub(r'[^\w\s-]', '', title.lower())
-            words = clean_title.split()
-            if len(words) > 3:  # Only try if we have enough words to make a meaningful match
-                # Create a LIKE pattern matching any 3 consecutive words
-                patterns = []
-                for i in range(len(words) - 2):
-                    pattern = f"%{words[i]}%{words[i+1]}%{words[i+2]}%"
-                    patterns.append(pattern)
-
-                # Try each pattern
-                for pattern in patterns:
-                    cursor.execute('''
-                        SELECT id, title
-                        FROM papers 
-                        WHERE LOWER(REPLACE(title, ':', '')) LIKE ?
-                    ''', (pattern,))
-
-                    results = cursor.fetchall()
-                    if results:
-                        print(f"Found {len(results)} potential matches:")
-                        for r in results:
-                            print(f"ID: {r[0]}, Title: {r[1]}")
-                        return results[0][0]  # Return first match
-
-            print(f"No title matches found using any pattern")
-
-        print(f"No matching paper found for {pdf_path}")
+            return None
+    except Exception as e:
+        logger.error(f"Error extracting authors from {pdf_path}: {e}")
         return None
 
 
-    def process_pdf(self, pdf_path: str) -> Optional[Dict[str, Any]]:
-        """Process a single PDF with rate limiting"""
-        try:
-            # Load PDF
-            loader = PyPDFLoader(pdf_path)
-            pages = loader.load()
+def extract_year_from_pdf(pdf_path: str) -> Optional[int]:
+    """
+    Extracts the publication year from a PDF file.
 
-            # Combine pages into a single text
-            content = ""
-            for page in pages:
-                content += page.page_content + "\n"
+    This function attempts to determine the publication year of the given PDF file by:
+    - Checking the PDF metadata for a creation date.
+    - Searching for specific patterns such as arXiv identifiers, copyright years,
+      or other common year patterns within the text of the first few pages.
 
-            # Rate limit and assess
-            self.rate_limiter.wait()
-            assessment = self.assessment.assess_paper(content)
+    If multiple year candidates are found in the text, the function returns the
+    most recent valid year. The valid year range is restricted to 1990 through the
+    next calendar year from the current system date.
 
-            if assessment is None:
-                logger.info(f"Paper {pdf_path} was not assessed as neurosymbolic")
-                return None
+    Attributes:
+        logger: Logging instance used for error reporting.
 
-            return assessment
+    Parameters:
+        pdf_path: str
+            The file path of the PDF to analyze.
 
-        except Exception as e:
-            logger.error(f"Error processing {pdf_path}: {e}")
+    Returns:
+        Optional[int]: Detected publication year, or None if no valid year is found.
+
+    Raises:
+        Any exceptions encountered during file processing or text extraction
+        are logged, and the function returns None.
+    """
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
+
+            # Try metadata first
+            if pdf.metadata and '/CreationDate' in pdf.metadata:
+                date_str = pdf.metadata['/CreationDate']
+                # Parse PDF date format (D:YYYYMMDDHHmmSS)
+                year_match = re.search(r'D:(\d{4})', date_str)
+                if year_match:
+                    return int(year_match.group(1))
+
+            # Search for year patterns in first few pages
+            for i in range(min(3, len(pdf.pages))):
+                text = pdf.pages[i].extract_text()
+
+                # Look for arXiv pattern
+                arxiv_match = re.search(r'arXiv:(\d{2})(\d{2})\.\d{4,5}', text)
+                if arxiv_match:
+                    year = int('20' + arxiv_match.group(1))
+                    return year
+
+                # Look for copyright year
+                copyright_match = re.search(r'©\s*(\d{4})', text)
+                if copyright_match:
+                    return int(copyright_match.group(1))
+
+                # Look for common year patterns
+                year_patterns = [
+                    r'(19|20)\d{2}',  # Basic year
+                    r'published.*?(19|20)\d{2}',
+                    r'accepted.*?(19|20)\d{2}',
+                    r'submitted.*?(19|20)\d{2}'
+                ]
+
+                for pattern in year_patterns:
+                    matches = re.findall(pattern, text, re.IGNORECASE)
+                    if matches:
+                        # Get the most recent year
+                        years = [int(m) if isinstance(m, str) and m.isdigit() else int(m[0] + m[1])
+                                 for m in matches if isinstance(m, (str, tuple))]
+                        valid_years = [y for y in years if 1990 <= y <= datetime.now().year + 1]
+                        if valid_years:
+                            return max(valid_years)
+
             return None
+    except Exception as e:
+        logger.error(f"Error extracting year from {pdf_path}: {e}")
+        return None
 
 
-    def save_assessment(self, paper_id: int, assessment: Dict[str, Any]):
-        """Save paper assessment to database with proper dict access"""
-        cursor = self.conn.cursor()
+def extract_full_metadata_from_pdf(pdf_path: str) -> Dict[str, Any]:
+    """
+    Extracts comprehensive metadata from a specified PDF file, including attributes
+    such as DOI, title, authors, year, and venue. The extraction process attempts to
+    determine these attributes using a combination of auxiliary helper functions and
+    direct parsing of the PDF file's content.
 
-        try:
-            cursor.execute('''
-            INSERT OR REPLACE INTO paper_assessments
-            (paper_id, is_neurosymbolic, is_development, paper_type, summary, takeaways, assessment_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                paper_id,
-                assessment['is_neurosymbolic'],
-                assessment['is_development'],
-                assessment['paper_type'],
-                assessment['summary'],
-                assessment['takeaways'],
-                datetime.now().isoformat()
-            ))
+    Attributes like DOI, title, authors, and year are determined using specialized
+    helper functions, while the venue is defaulted to 'arXiv'. The function also
+    searches for an arXiv ID within the first few pages of the PDF, and attempts to
+    derive the year from the arXiv ID if other methods for year extraction fail.
 
-            self.conn.commit()
-            logger.info(f"Assessment saved for paper {paper_id}")
+    Extensive fallbacks are implemented in case specific metadata elements cannot
+    be extracted, ensuring that the function provides a complete metadata dictionary
+    even when specific sources are unavailable or malformed.
 
-        except KeyError as e:
-            logger.error(f"Missing key in assessment dict: {e}")
-            logger.error(f"Assessment dict contents: {assessment}")
-        except Exception as e:
-            logger.error(f"Error saving assessment: {e}")
+    Parameters:
+        pdf_path: str
+            The path to the PDF file from which metadata is to be extracted.
 
+    Returns:
+        Dict[str, Any]
+            A dictionary containing extracted metadata. It includes the following
+            entries:
+            - 'doi': DOI of the document, if available, otherwise None.
+            - 'title': Title of the document, extracted or derived from filename.
+            - 'authors': Authors of the document, extracted or defaulted to
+              'Unknown Authors'.
+            - 'year': Year of publication, extracted or defaulted to the current year.
+            - 'venue': "arXiv".
+            - 'arxiv_id': arXiv ID extracted from the document, if found, otherwise None.
 
-    def process_directory(self, directory_path: str):
-        """Process all PDFs in directory with error handling"""
-        pdf_files = Path(directory_path).glob('*.pdf')
+    Raises:
+        None
+    """
+    metadata = {
+        'doi': extract_doi_from_pdf(pdf_path),
+        'title': extract_title_from_pdf(pdf_path),
+        'authors': extract_authors_from_pdf(pdf_path),
+        'year': extract_year_from_pdf(pdf_path),
+        'venue': 'arXiv',
+        'arxiv_id': None
+    }
 
-        for pdf_path in pdf_files:
-            logger.info(f"\nProcessing {pdf_path.name}...")
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf = PyPDF2.PdfReader(file)
 
-            try:
-                # Find paper ID
-                paper_id = self.find_paper_id(str(pdf_path))
-                logger.info(f"Paper ID -> {paper_id}")
+            # Search first pages for arXiv patterns
+            for i in range(min(3, len(pdf.pages))):
+                text = pdf.pages[i].extract_text()
 
-                if not paper_id:
-                    logger.warning(f"No matching paper found for {pdf_path.name}, skipping...")
-                    continue
+                # Look for arXiv ID (e.g., arXiv:2401.12345)
+                arxiv_match = re.search(r'arXiv:(\d{4}\.\d{4,5})', text)
+                if arxiv_match:
+                    metadata['arxiv_id'] = arxiv_match.group(1)
+                    # Extract year from arXiv ID if not already found
+                    if not metadata['year']:
+                        year = int('20' + arxiv_match.group(1)[:2])
+                        if 2000 <= year <= datetime.now().year + 1:
+                            metadata['year'] = year
+                    break
 
-                # Check page count
-                with open(pdf_path, 'rb') as file:
-                    pdf = PyPDF2.PdfReader(file)
-                    if len(pdf.pages) > 40:
-                        logger.warning(f"Skipping {pdf_path} due to excessive page count")
-                        self._mark_paper_unprocessed(paper_id)
-                        continue
+    except Exception as e:
+        logger.error(f"Error extracting full metadata from {pdf_path}: {e}")
 
-                # Process PDF
-                assessment = self.process_pdf(str(pdf_path))
-                if assessment:
-                    self.save_assessment(paper_id, assessment)
-                    self._mark_paper_processed(paper_id, str(pdf_path))
-                else:
-                    logger.warning(f"No assessment generated for {pdf_path.name}")
+    # Set defaults if not found
+    if not metadata['title']:
+        metadata['title'] = Path(pdf_path).stem  # Use filename as fallback
+    if not metadata['authors']:
+        metadata['authors'] = 'Unknown Authors'
+    if not metadata['year']:
+        metadata['year'] = datetime.now().year
 
-            except Exception as e:
-                logger.error(f"Error processing {pdf_path.name}: {e}")
-                continue
-
-        logger.info("All PDFs processed.")
-        self.conn.commit()
-
-    def _mark_paper_processed(self, paper_id: int, file_path: str):
-        """Mark paper as processed in database"""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            UPDATE papers
-            SET file_path = ?, processed = 1
-            WHERE id = ?
-        ''', (file_path, paper_id))
-        self.conn.commit()
-
-    def _mark_paper_unprocessed(self, paper_id: int):
-        """Mark paper as not processed in database"""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            UPDATE papers
-            SET processed = 0
-            WHERE id = ?
-        ''', (paper_id,))
-        self.conn.commit()
+    return metadata
